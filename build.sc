@@ -54,3 +54,37 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
     def ivyDeps = Agg(ivy"com.lihaoyi::utest:0.8.1")
   }
 }
+object circt extends Module {
+  def circtSourcePath = os.pwd / "dependencies" / "circt"
+  def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
+  def cmake = T.persistent {
+    os.proc(
+      "cmake",
+      "-B", T.dest,
+      "-G", "Ninja",
+      "-DCMAKE_BUILD_TYPE=Debug",
+      "-DLLVM_ENABLE_PROJECTS=mlir",
+      "-DLLVM_ENABLE_ASSERTIONS=ON",
+      "-DLLVM_BUILD_EXAMPLES=OFF",
+      "-DLLVM_ENABLE_OCAMLDOC=OFF",
+      "-DLLVM_ENABLE_BINDINGS=OFF",
+      "-DLLVM_CCACHE_BUILD=OFF",
+      "-DLLVM_BUILD_TOOLS=ON",
+      "-DLLVM_OPTIMIZED_TABLEGEN=ON",
+      "-DLLVM_INCLUDE_TOOLS=ON",
+      "-DLLVM_USE_SPLIT_DWARF=ON",
+      "-DLLVM_BUILD_LLVM_DYLIB=ON",
+      "-DLLVM_LINK_LLVM_DYLIB=ON",
+      "-DLLVM_EXTERNAL_PROJECTS=circt",
+      s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
+    ).call(llvmSourcePath / "llvm")
+    PathRef(T.dest)
+  }
+  def compile = T.persistent {
+    os.proc(
+      "ninja",
+      "-C", cmake().path,
+    ).call(T.dest)
+    PathRef(T.dest)
+  }
+}
