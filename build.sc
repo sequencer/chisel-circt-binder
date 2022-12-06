@@ -49,6 +49,17 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
     PathRef(T.dest / "jextract-19" / "bin" / "jextract")
   }
 
+  override def generatedSources: T[Seq[PathRef]] = T {
+    os.proc(
+      jextract().path,
+      circt.install().path / "include" / "circt-c" / "Dialect" / "FIRRTL.h",
+      "-I", circt.install().path / "include",
+      "--source",
+      "--output", T.dest
+    ).call()
+    Lib.findSourceFiles(os.walk(T.dest).map(PathRef(_)), Seq("java")).map(PathRef(_))
+  }
+
   object tests extends Tests with TestModule.Utest {
     def scalacOptions = { m.scalacOptions() }
     def ivyDeps = Agg(ivy"com.lihaoyi::utest:0.8.1")
