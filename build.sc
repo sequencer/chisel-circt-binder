@@ -57,11 +57,12 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 object circt extends Module {
   def circtSourcePath = os.pwd / "dependencies" / "circt"
   def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
-  def cmake = T.persistent {
+  def install = T.persistent {
     os.proc(
       "cmake",
       "-B", T.dest,
       "-G", "Ninja",
+      s"-DCMAKE_INSTALL_PREFIX=${T.dest / "install"}",
       "-DCMAKE_BUILD_TYPE=Debug",
       "-DLLVM_ENABLE_PROJECTS=mlir",
       "-DLLVM_ENABLE_ASSERTIONS=ON",
@@ -78,13 +79,12 @@ object circt extends Module {
       "-DLLVM_EXTERNAL_PROJECTS=circt",
       s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
     ).call(llvmSourcePath / "llvm")
-    PathRef(T.dest)
-  }
-  def compile = T.persistent {
     os.proc(
-      "ninja",
-      "-C", cmake().path,
+      "ninja", 
+      "install-mlir-headers-stripped",
+      "install-circt-headers-stripped",
+      "install-llvm-headers-stripped"
     ).call(T.dest)
-    PathRef(T.dest)
+    PathRef(T.dest / "install")
   }
 }
