@@ -109,6 +109,8 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
         jextract().path.toString,
         (circt.install().path / "include" / "circt-c" / "Dialect" / "FIRRTL.h").toString,
         "-I", (circt.install().path / "include").toString,
+        "-t", "circt.binding",
+        "--header-class-name", "FIRRTL",
         "--source",
         "--output", T.dest.toString
       ) ++ includeFunctions().flatMap(f => Seq("--include-function", f)) ++
