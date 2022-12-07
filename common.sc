@@ -48,6 +48,10 @@ trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule {
     super.scalacOptions() ++ chisel3PluginJar().map(path => s"-Xplugin:${path.path}") ++ Some("-Ymacro-annotations")
   }
 
+  override def javacOptions = T {
+    super.javacOptions() ++ Seq("--enable-preview", "--release", "19")
+  }
+
   override def ivyDeps = T {
     Agg() ++ chisel3IvyDep()
   }
