@@ -4,13 +4,15 @@ package chisel3.circt
 
 import chisel3.internal.firrtl._
 
-package object converter {
+private[chisel3] object converter {
   def convert(circuit: Circuit): Unit = {
     implicit val visitor = new Visitor()
     visitCircuit(circuit)
   }
   // Context for storing a MLIR Builder
-  class Visitor()
+  class Visitor(){
+    circt.binding.FIRRTL.mlirGetDialectHandle__firrtl__$MH()
+  }
   def visitCircuit(circuit: Circuit)(implicit visitor: Visitor): Unit = {
     // TODO: Call C-API Here
     circuit.components.foreach {

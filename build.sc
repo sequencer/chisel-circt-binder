@@ -52,6 +52,10 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
     v.scala
   }
 
+  override def javacOptions: T[Seq[String]] = {
+    Seq("--enable-preview", "--release", "19")
+  }
+
   def chisel3Module = Some(mychisel3)
 
   def chisel3PluginJar = T {
@@ -126,6 +130,14 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
   object tests extends Tests with TestModule.Utest {
     def scalacOptions = {
       m.scalacOptions()
+    }
+
+    override def javacOptions: T[Seq[String]] = {
+      Seq("--enable-preview", "--release", "19")
+    }
+
+    override def forkArgs: T[Seq[String]] = {
+      Seq("--enable-preview")
     }
 
     def ivyDeps = Agg(ivy"com.lihaoyi::utest:0.8.1")
