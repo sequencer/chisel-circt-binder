@@ -81,6 +81,7 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
       "-I", circt.install().path / "include",
       "--dump-includes", f
     ).call()
+    os.read.lines(f).filter(s => s.nonEmpty && !s.startsWith("#"))
   }
 
   def includeFunctions = T {
