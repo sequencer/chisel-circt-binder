@@ -8,14 +8,29 @@ private[chisel3] object converter {
   // Some initialize code when JVM start.
   org.llvm.circt.firrtl.CIRCTCAPIFIRRTL.mlirGetDialectHandle__firrtl__$MH()
 
-  def convert(circuit: Circuit): Unit = {
-    implicit val visitor = new Visitor()
+  def convert(circuit: Circuit): ConverterContext = {
+    implicit val ctx = new ConverterContext
     visitCircuit(circuit)
+    ctx
   }
   // Context for storing a MLIR Builder
-  class Visitor() {}
-  def visitCircuit(circuit: Circuit)(implicit visitor: Visitor): Unit = {
-    // TODO: Call C-API Here
+  class ConverterContext {
+    // TODO
+    def verilog: String = ""
+
+    // TODO
+    def firrtl: String = ""
+
+    private[converter] def visitCircuit(name: String): Unit = {
+      // TODO: Call C-API Here
+    }
+
+    private[converter] def visitDefModule(name: String): Unit = {
+      // TODO: Call C-API Here
+    }
+  }
+  def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
+    ctx.visitCircuit(circuit.name)
     circuit.components.foreach {
       case defBlackBox: DefBlackBox =>
         visitDefBlackBox(defBlackBox)
@@ -23,16 +38,18 @@ private[chisel3] object converter {
         visitDefModule(defModule)
     }
   }
-  def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit visitor: Visitor): Unit = {
+  def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
 
     defBlackBox.ports.foreach { port =>
       visitPort(port)
     }
   }
-  def visitDefModule(defModule: DefModule)(implicit visitor: Visitor): Unit = {
-    // TODO: Call C-API Here
-
+  def visitDefModule(defModule: DefModule)(implicit ctx: ConverterContext): Unit = {
+    ctx.visitDefModule(defModule.name)
+    defModule.ports.foreach { port =>
+      visitPort(port)
+    }
     defModule.commands.foreach {
       // Command
       case altBegin: AltBegin =>
@@ -87,68 +104,68 @@ private[chisel3] object converter {
         visitVerfiStop(stop)
     }
   }
-  def visitAltBegin(altBegin: AltBegin)(implicit visitor: Visitor): Unit = {
+  def visitAltBegin(altBegin: AltBegin)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
   }
-  def visitAttach(attach: Attach)(implicit visitor: Visitor): Unit = {
+  def visitAttach(attach: Attach)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
   }
-  def visitConnect(connect: Connect)(implicit visitor: Visitor): Unit = {
+  def visitConnect(connect: Connect)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
   }
-  def visitConnectInit(connectInit: ConnectInit)(implicit visitor: Visitor): Unit = {
+  def visitConnectInit(connectInit: ConnectInit)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefInvalid(defInvalid: DefInvalid)(implicit visitor: Visitor): Unit = {
+  def visitDefInvalid(defInvalid: DefInvalid)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd)(implicit visitor: Visitor): Unit = {
+  def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitPartialConnect(partialConnect: PartialConnect)(implicit visitor: Visitor): Unit = {
+  def visitPartialConnect(partialConnect: PartialConnect)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitWhenBegin(whenBegin: WhenBegin)(implicit visitor: Visitor): Unit = {
+  def visitWhenBegin(whenBegin: WhenBegin)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitWhenEnd(whenEnd: WhenEnd)(implicit visitor: Visitor): Unit = {
+  def visitWhenEnd(whenEnd: WhenEnd)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefInstance(defInstance: DefInstance)(implicit visitor: Visitor): Unit = {
+  def visitDefInstance(defInstance: DefInstance)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
 
     defInstance.ports.foreach { port =>
       visitPort(port)
     }
   }
-  def visitPort(port: Port)(implicit visitor: Visitor): Unit = {
+  def visitPort(port: Port)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefMemPort(defMemPort: DefMemPort[_])(implicit visitor: Visitor): Unit = {
+  def visitDefMemPort(defMemPort: DefMemPort[_])(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefMemory(defMemory: DefMemory)(implicit visitor: Visitor): Unit = {
+  def visitDefMemory(defMemory: DefMemory)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefPrim(defPrim: DefPrim[_])(implicit visitor: Visitor): Unit = {
+  def visitDefPrim(defPrim: DefPrim[_])(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefReg(defReg: DefReg)(implicit visitor: Visitor): Unit = {
+  def visitDefReg(defReg: DefReg)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefRegInit(defRegInit: DefRegInit)(implicit visitor: Visitor): Unit = {
+  def visitDefRegInit(defRegInit: DefRegInit)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefSeqMemory(defSeqMemory: DefSeqMemory)(implicit visitor: Visitor): Unit = {
+  def visitDefSeqMemory(defSeqMemory: DefSeqMemory)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefWire(defWire: DefWire)(implicit visitor: Visitor): Unit = {
+  def visitDefWire(defWire: DefWire)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitPrintf(printf: Printf)(implicit visitor: Visitor): Unit = {
+  def visitPrintf(printf: Printf)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitStop(stop: Stop)(implicit visitor: Visitor): Unit = {
+  def visitStop(stop: Stop)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
   def visitVerfiAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
