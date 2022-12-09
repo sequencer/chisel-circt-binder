@@ -113,8 +113,9 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
         jextract().path.toString,
         (circt.install().path / "include" / "circt-c" / "Dialect" / "FIRRTL.h").toString,
         "-I", (circt.install().path / "include").toString,
-        "-t", "circt.binding",
-        "--header-class-name", "FIRRTL",
+        "-t", "org.llvm.circt.firrtl",
+        "-l", "CIRCTCAPIFIRRTL",
+        "--header-class-name", "CIRCTCAPIFIRRTL",
         "--source",
         "--output", T.dest.toString
       ) ++ includeFunctions().flatMap(f => Seq("--include-function", f)) ++
@@ -132,12 +133,12 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
       m.scalacOptions()
     }
 
-    override def javacOptions: T[Seq[String]] = {
-      Seq("--enable-preview", "--release", "19")
-    }
-
     override def forkArgs: T[Seq[String]] = {
-      Seq("--enable-preview")
+      Seq(
+        "--enable-native-access=ALL-UNNAMED",
+        "--enable-preview",
+        s"-Djava.library.path=${circt.install().path / "lib"}"
+      )
     }
 
     def ivyDeps = Agg(ivy"com.lihaoyi::utest:0.8.1")
@@ -155,28 +156,23 @@ object circt extends Module {
       "-B", T.dest,
       "-G", "Ninja",
       s"-DCMAKE_INSTALL_PREFIX=${T.dest / "install"}",
-      "-DCMAKE_BUILD_TYPE=Debug",
+      "-DCMAKE_BUILD_TYPE=Release",
       "-DLLVM_ENABLE_PROJECTS=mlir",
-      "-DLLVM_ENABLE_ASSERTIONS=ON",
+      "-DLLVM_ENABLE_ASSERTIONS=OFF",
       "-DLLVM_BUILD_EXAMPLES=OFF",
       "-DLLVM_ENABLE_OCAMLDOC=OFF",
       "-DLLVM_ENABLE_BINDINGS=OFF",
       "-DLLVM_CCACHE_BUILD=OFF",
-      "-DLLVM_BUILD_TOOLS=ON",
+      "-DLLVM_BUILD_TOOLS=OFF",
       "-DLLVM_OPTIMIZED_TABLEGEN=ON",
-      "-DLLVM_INCLUDE_TOOLS=ON",
       "-DLLVM_USE_SPLIT_DWARF=ON",
-      "-DLLVM_BUILD_LLVM_DYLIB=ON",
-      "-DLLVM_LINK_LLVM_DYLIB=ON",
+      "-DLLVM_BUILD_LLVM_DYLIB=OFF",
+      "-DLLVM_LINK_LLVM_DYLIB=OFF",
       "-DLLVM_EXTERNAL_PROJECTS=circt",
+      "-DBUILD_SHARED_LIBS=ON",
       s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
     ).call(llvmSourcePath / "llvm")
-    os.proc(
-      "ninja",
-      "install-mlir-headers-stripped",
-      "install-circt-headers-stripped",
-      "install-llvm-headers-stripped"
-    ).call(T.dest)
+    os.proc("ninja", "install").call(T.dest)
     PathRef(T.dest / "install")
   }
 }
