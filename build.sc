@@ -108,6 +108,8 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
   }
 
   override def generatedSources: T[Seq[PathRef]] = T {
+    circt.circtTag()
+    circt.llvmTag()
     os.proc(
       Seq(
         jextract().path.toString,
@@ -150,7 +152,17 @@ object circt extends Module {
 
   def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
 
+  def circtTag = T.input {
+    os.proc("git", "describe", "--dirty").call(circtSourcePath)
+  }
+
+  def llvmTag = T.input {
+    os.proc("git", "describe", "--dirty").call(llvmSourcePath)
+  }
+
   def install = T.persistent {
+    circtTag()
+    llvmTag()
     os.proc(
       "cmake",
       "-B", T.dest,
