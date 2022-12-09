@@ -6,7 +6,6 @@ import chisel3.internal.firrtl._
 
 private[chisel3] object converter {
   // Some initialize code when JVM start.
-  org.llvm.circt.firrtl.CIRCTCAPIFIRRTL.mlirGetDialectHandle__firrtl__$MH()
 
   def convert(circuit: Circuit): ConverterContext = {
     implicit val ctx = new ConverterContext
