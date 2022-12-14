@@ -86,10 +86,13 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 
   def includeFunctions = T {
     Seq(
-      "deleteChiselCIRCTContext",
-      "getChiselCIRCTContext",
-      "visitCircuit",
-      "visitModule"
+      "firrtlCreateContext",
+      "firrtlDestroyContext",
+      "firrtlSetErrorHandler",
+      "firrtlVisitCircuit",
+      "firrtlVisitModule",
+      "firrtlExportFirrtl",
+      "firrtlDestroyString",
     )
   }
 
@@ -99,12 +102,15 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 
   def includeStructs = T {
     Seq(
-      "ChiselCIRCTContext"
+      "MlirStringRef",
+      "FirrtlContext",
     )
   }
 
   def includeTypedefs = T {
-    Seq.empty[String]
+    Seq(
+      "FirrtlErrorHandler"
+    )
   }
 
   def includeUnions = T {
@@ -129,7 +135,7 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
         "--output", T.dest.toString
       ) ++ includeFunctions().flatMap(f => Seq("--include-function", f)) ++
         includeMacros().flatMap(f => Seq("--include-macro", f)) ++
-        includeStructs().flatMap(f => Seq("--include-function", f)) ++
+        includeStructs().flatMap(f => Seq("--include-struct", f)) ++
         includeTypedefs().flatMap(f => Seq("--include-typedef", f)) ++
         includeUnions().flatMap(f => Seq("--include-union", f)) ++
         includeVars().flatMap(f => Seq("--include-var", f))
