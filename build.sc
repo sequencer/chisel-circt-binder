@@ -86,10 +86,13 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 
   def includeFunctions = T {
     Seq(
-      "deleteChiselCIRCTContext",
-      "getChiselCIRCTContext",
-      "visitCircuit",
-      "visitModule"
+      "firrtlCreateContext",
+      "firrtlDestroyContext",
+      "firrtlSetErrorHandler",
+      "firrtlVisitCircuit",
+      "firrtlVisitModule",
+      "firrtlExportFirrtl",
+      "firrtlDestroyString",
     )
   }
 
@@ -99,12 +102,15 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 
   def includeStructs = T {
     Seq(
-      "ChiselCIRCTContext"
+      "MlirStringRef",
+      "FirrtlContext",
     )
   }
 
   def includeTypedefs = T {
-    Seq.empty[String]
+    Seq(
+      "FirrtlErrorHandler"
+    )
   }
 
   def includeUnions = T {
