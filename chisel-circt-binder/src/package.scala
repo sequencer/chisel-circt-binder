@@ -3,6 +3,11 @@
 package chisel3.circt
 
 import chisel3.internal.firrtl._
+import java.lang.foreign._;
+import java.lang.foreign.MemoryAddress.NULL;
+import java.lang.foreign.ValueLayout._;
+import org.llvm.circt.firrtl._;
+import org.llvm.circt.firrtl.CIRCTCAPIFIRRTL._;
 
 private[chisel3] object converter {
   // Some initialize code when JVM start.
@@ -14,18 +19,54 @@ private[chisel3] object converter {
   }
   // Context for storing a MLIR Builder
   class ConverterContext {
+    def memorySession: MemorySession = MemorySession.openConfined()
+
+    // TODO: check the memory leaks in the following methods
+    def createMlirStr(str: String): MemorySegment = {
+      val strBytes = str.getBytes()
+      val strSeg = MemorySegment.allocateNative(strBytes.length, memorySession)
+      strSeg.copyFrom(MemorySegment.ofArray(strBytes))
+
+      val mlirStr = MemorySegment.allocateNative(MlirStringRef.$LAYOUT(), memorySession)
+      MlirStringRef.data$set(mlirStr, strSeg.address());
+      MlirStringRef.length$set(mlirStr, strBytes.length);
+
+      mlirStr
+    }
+    def fromMlirStrRef(mlirStr: MemorySegment): String = {
+      var strSlice = MemorySegment.ofAddress(MlirStringRef.data$get(mlirStr), MlirStringRef.length$get(mlirStr), memorySession)
+      new String(strSlice.toArray(JAVA_BYTE))
+    }
+
     // TODO
     def verilog: String = ""
 
     // TODO
     def firrtl: String = ""
 
+    // TODO: destory the context when destructing
+    val ctx: MemorySegment = firrtlCreateContext(SegmentAllocator.newNativeArena(memorySession))
+
+    val errorHandler = new FirrtlErrorHandler {
+      def apply(message: MemorySegment, userData: MemoryAddress): Unit = {
+        var str = fromMlirStrRef(message)
+        println(str)
+      }
+    }
+    var errorHandlerStub: MemorySegment = FirrtlErrorHandler.allocate(errorHandler, memorySession)
+
+    firrtlSetErrorHandler(ctx, errorHandlerStub, NULL)
+
+    //firrtlDestroyContext(ctx)
+
     private[converter] def visitCircuit(name: String): Unit = {
-      // TODO: Call C-API Here
+      firrtlVisitCircuit(ctx, createMlirStr(name))
     }
 
     private[converter] def visitDefModule(name: String): Unit = {
-      // TODO: Call C-API Here
+      firrtlVisitModule(ctx, createMlirStr(name))
+
+      firrtlExportFirrtl(SegmentAllocator.newNativeArena(memorySession), ctx);
     }
   }
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
