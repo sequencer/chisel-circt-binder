@@ -117,7 +117,6 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 
   override def generatedSources: T[Seq[PathRef]] = T {
     circt.circtTag()
-    circt.llvmTag()
     os.proc(
       Seq(
         jextract().path.toString,
@@ -158,19 +157,12 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
 object circt extends Module {
   def circtSourcePath = os.pwd / "dependencies" / "circt"
 
-  def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
-
   def circtTag = T.input {
     os.proc("git", "describe", "--dirty").call(circtSourcePath)
   }
 
-  def llvmTag = T.input {
-    os.proc("git", "describe", "--dirty").call(llvmSourcePath)
-  }
-
   def install = T.persistent {
     circtTag()
-    llvmTag()
     os.proc(
       "cmake",
       "-B", T.dest,
@@ -178,6 +170,7 @@ object circt extends Module {
       s"-DCMAKE_INSTALL_PREFIX=${T.dest / "install"}",
       "-DCMAKE_BUILD_TYPE=Release",
       "-DLLVM_ENABLE_PROJECTS=mlir",
+      "-DLLVM_TARGETS_TO_BUILD=host",
       "-DLLVM_ENABLE_ASSERTIONS=OFF",
       "-DLLVM_BUILD_EXAMPLES=OFF",
       "-DLLVM_ENABLE_OCAMLDOC=OFF",
@@ -191,7 +184,7 @@ object circt extends Module {
       "-DLLVM_EXTERNAL_PROJECTS=circt",
       "-DBUILD_SHARED_LIBS=ON",
       s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
-    ).call(llvmSourcePath / "llvm")
+    ).call(circtSourcePath / "llvm" / "llvm")
     os.proc("ninja", "install").call(T.dest)
     PathRef(T.dest / "install")
   }
