@@ -91,6 +91,7 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
       "firrtlSetErrorHandler",
       "firrtlVisitCircuit",
       "firrtlVisitModule",
+      "firrtlVisitPort",
       "firrtlExportFirrtl",
       "firrtlDestroyString",
     )
@@ -104,17 +105,33 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
     Seq(
       "MlirStringRef",
       "FirrtlContext",
+      "FirrtlTypeUInt",
+      "FirrtlTypeSInt",
+      "FirrtlTypeClock",
+      "FirrtlTypeReset",
+      "FirrtlTypeAsyncReset",
+      "FirrtlTypeAnalog",
+      "FirrtlTypeVector",
+      "FirrtlTypeBundleField",
+      "FirrtlTypeBundle",
+      "FirrtlType",
     )
   }
 
   def includeTypedefs = T {
     Seq(
-      "FirrtlErrorHandler"
+      "FirrtlStringRef",
+      "FirrtlErrorHandler",
+      // enums (FIXME)
+      "FirrtlPortDirection",
+      "FirrtlTypeKind",
     )
   }
 
   def includeUnions = T {
-    Seq.empty[String]
+    Seq(
+      "FirrtlTypeUnion",
+    )
   }
 
   def includeVars = T {

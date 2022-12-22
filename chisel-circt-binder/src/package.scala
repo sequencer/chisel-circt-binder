@@ -3,11 +3,14 @@
 package chisel3.circt
 
 import chisel3.internal.firrtl._
-import java.lang.foreign._;
-import java.lang.foreign.MemoryAddress.NULL;
-import java.lang.foreign.ValueLayout._;
-import org.llvm.circt.firrtl._;
-import org.llvm.circt.firrtl.CIRCTCAPIFIRRTL._;
+import chisel3.internal.sourceinfo._
+import chisel3.SpecifiedDirection
+import firrtl.{ir => fir}
+import java.lang.foreign._
+import java.lang.foreign.MemoryAddress.NULL
+import java.lang.foreign.ValueLayout._
+import org.llvm.circt.firrtl._
+import org.llvm.circt.firrtl.CIRCTCAPIFIRRTL._
 
 private[chisel3] object converter {
   // Some initialize code when JVM start.
@@ -15,6 +18,8 @@ private[chisel3] object converter {
   def convert(circuit: Circuit): ConverterContext = {
     implicit val ctx = new ConverterContext
     visitCircuit(circuit)
+    // TODO: this line is a teap code
+    firrtlExportFirrtl(SegmentAllocator.newNativeArena(ctx.memorySession), ctx.ctx);
     ctx
   }
   // Context for storing a MLIR Builder
@@ -50,7 +55,7 @@ private[chisel3] object converter {
     val errorHandler = new FirrtlErrorHandler {
       def apply(message: MemorySegment, userData: MemoryAddress): Unit = {
         var str = fromMlirStrRef(message)
-        println(str)
+        println(s"!!! $str")
       }
     }
     var errorHandlerStub: MemorySegment = FirrtlErrorHandler.allocate(errorHandler, memorySession)
@@ -65,12 +70,74 @@ private[chisel3] object converter {
 
     private[converter] def visitDefModule(name: String): Unit = {
       firrtlVisitModule(ctx, createMlirStr(name))
+    }
 
-      firrtlExportFirrtl(SegmentAllocator.newNativeArena(memorySession), ctx);
+    private[converter] def visitPort(name: String, port: Port): Unit = {
+      import chisel3.SpecifiedDirection._;
+
+      def createType[T](kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
+        val seg = MemorySegment.allocateNative(FirrtlType.$LAYOUT(), memorySession)
+        FirrtlType.kind$set(seg, kind)
+        set_union(FirrtlType.u$slice(seg))
+        seg
+      }
+
+      def convertFirWidth(width: fir.Width): Int = {
+        width match {
+          case fir.UnknownWidth => -1
+          case fir.IntWidth(v) => v.toInt
+        }
+      }
+
+      // TODO: We should use enum constants here instead of literal integers, but because of a jextract bug they are not generated.
+      //       I have reported this bug (internal review ID: 9074500), currently it is not public.
+
+      def firTypeToFfiType(ty: fir.Type): MemorySegment = {
+        ty match {
+          case t: fir.UIntType => createType(0 /* FIRRTL_TYPE_KIND_UINT */, u => FirrtlTypeUInt.width$set(u, convertFirWidth(t.width)))
+          case t: fir.SIntType => createType(1 /* FIRRTL_TYPE_KIND_SINT */, u => FirrtlTypeSInt.width$set(u, convertFirWidth(t.width)))
+          case _: fir.FixedType => /* 2 FIRRTL_TYPE_KIND_FIXED */ throw new AssertionError("FixedPoint type is not supported yet in CIRCT")
+          case _: fir.IntervalType => /* 3 FIRRTL_TYPE_KIND_INTERVAL */ throw new AssertionError("Interval type is not supported yet in CIRCT")
+          case fir.ClockType => createType(4 /* FIRRTL_TYPE_KIND_CLOCK */, _ => {})
+          case fir.ResetType => createType(5 /* FIRRTL_TYPE_KIND_RESET */, _ => {})
+          case fir.AsyncResetType => createType(6 /* FIRRTL_TYPE_KIND_ASYNC_RESET */, _ => {})
+          case t: fir.AnalogType => createType(7 /* FIRRTL_TYPE_KIND_ANALOG */, u => FirrtlTypeAnalog.width$set(u, convertFirWidth(t.width)))
+          case t: fir.VectorType => createType(8 /* FIRRTL_TYPE_KIND_VECTOR */, u => {
+            FirrtlTypeVector.type$set(u, firTypeToFfiType(t.tpe).address())
+            FirrtlTypeVector.count$set(u, t.size)
+          })
+          case t: fir.BundleType => createType(9 /* FIRRTL_TYPE_KIND_BUNDLE */, u => {
+            val fieldsSeg = MemorySegment.allocateNative(FirrtlTypeBundleField.sizeof() * t.fields.length, memorySession)
+            t.fields.zipWithIndex.foreach(fi => {
+              val (f, i) = fi;
+              val field = fieldsSeg.asSlice(FirrtlTypeBundleField.sizeof() * i, FirrtlTypeBundleField.sizeof())
+              FirrtlTypeBundleField.flip$set(field, f.flip match {
+                case fir.Default => false
+                case fir.Flip => true
+              })
+              FirrtlTypeBundleField.name$slice(field).copyFrom(createMlirStr(f.name))
+              FirrtlTypeBundleField.type$set(field, firTypeToFfiType(f.tpe).address())
+            })
+            FirrtlTypeBundle.fields$set(u, fieldsSeg.address())
+            FirrtlTypeBundle.count$set(u, t.fields.length)
+          })
+        }
+      }
+
+      val firPort = Converter.convert(port);
+
+      val dir = firPort.direction match {
+        case fir.Input  => 0 // FIRRTL_PORT_DIRECTION_INPUT
+        case fir.Output => 1 // FIRRTL_PORT_DIRECTION_OUTPUT
+      }
+      val ty = firTypeToFfiType(firPort.tpe)
+
+      firrtlVisitPort(ctx, createMlirStr(name), dir, ty);
     }
   }
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
     ctx.visitCircuit(circuit.name)
+
     circuit.components.foreach {
       case defBlackBox: DefBlackBox =>
         visitDefBlackBox(defBlackBox)
@@ -87,6 +154,7 @@ private[chisel3] object converter {
   }
   def visitDefModule(defModule: DefModule)(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefModule(defModule.name)
+
     defModule.ports.foreach { port =>
       visitPort(port)
     }
@@ -179,7 +247,7 @@ private[chisel3] object converter {
     }
   }
   def visitPort(port: Port)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
+    ctx.visitPort(Converter.getRef(port.id, port.sourceInfo).name, port)
   }
   def visitDefMemPort(defMemPort: DefMemPort[_])(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
