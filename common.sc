@@ -5,7 +5,7 @@ import mill.scalalib.publish._
 import $ivy.`de.tototec::de.tobiasroeser.mill.vcs.version::0.1.4`
 import de.tobiasroeser.mill.vcs.version.VcsVersion
 
-trait ChiselCIRCTBinderPublishModule extends ScalaModule with PublishModule {m =>
+trait ChiselCIRCTBinderPublishModule extends PublishModule {m =>
   def publishVersion = de.tobiasroeser.mill.vcs.version.VcsVersion.vcsState().format()
   def pomSettings = T {
     PomSettings(
@@ -21,7 +21,9 @@ trait ChiselCIRCTBinderPublishModule extends ScalaModule with PublishModule {m =
   }
 }
 
-trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule {
+trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule with ScalaModule {
+  def circtJextractModule: PublishModule
+
   def chisel3Module: Option[PublishModule] = None
 
   def chisel3PluginJar: T[Option[PathRef]] = T {
@@ -34,7 +36,7 @@ trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule {
   def chisel3PluginIvyDep: T[Option[Dep]] = None
 
   // User should not override lines below
-  override def moduleDeps = Seq() ++ chisel3Module
+  override def moduleDeps = Seq(circtJextractModule) ++ chisel3Module
 
   override def scalacPluginClasspath = T {
     super.scalacPluginClasspath() ++ chisel3PluginJar()

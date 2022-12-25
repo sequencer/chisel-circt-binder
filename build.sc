@@ -46,25 +46,67 @@ object mychiseltest extends dependencies.chiseltest.build.chiseltestCrossModule(
   def treadleModule: Option[PublishModule] = Some(mytreadle)
 }
 
-object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with ScalafmtModule {
-  m =>
-  def scalaVersion = T {
-    v.scala
+object circt extends Module {
+  def circtSourcePath = os.pwd / "dependencies" / "circt"
+
+  def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
+
+  def installDirectory = T {
+    T.dest
+  }
+
+  def install = T {
+    os.proc("ninja", "-j64", "install").call(cmake())
+  }
+
+  def cmake = T.persistent {
+    os.proc(
+      "cmake",
+      "-S", llvmSourcePath / "llvm",
+      "-B", T.dest,
+      "-G", "Ninja",
+      s"-DCMAKE_INSTALL_PREFIX=${installDirectory()}",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DLLVM_ENABLE_PROJECTS=mlir",
+      "-DLLVM_TARGETS_TO_BUILD=X86",
+      "-DLLVM_ENABLE_ASSERTIONS=OFF",
+      "-DLLVM_BUILD_EXAMPLES=OFF",
+      "-DLLVM_INCLUDE_EXAMPLES=OFF",
+      "-DLLVM_INCLUDE_TESTS=OFF",
+      "-DLLVM_INSTALL_UTILS=OFF",
+      "-DLLVM_ENABLE_OCAMLDOC=OFF",
+      "-DLLVM_ENABLE_BINDINGS=OFF",
+      "-DLLVM_CCACHE_BUILD=OFF",
+      "-DLLVM_BUILD_TOOLS=OFF",
+      "-DLLVM_OPTIMIZED_TABLEGEN=ON",
+      "-DLLVM_USE_SPLIT_DWARF=ON",
+      "-DLLVM_BUILD_LLVM_DYLIB=OFF",
+      "-DLLVM_LINK_LLVM_DYLIB=OFF",
+      "-DLLVM_EXTERNAL_PROJECTS=circt",
+      "-DBUILD_SHARED_LIBS=ON",
+      s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
+    ).call(T.dest)
+    T.dest
+  }
+}
+
+object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
+  with JavaModule {
+  def javacVersion = T.input {
+    val version = os.proc("javac", "-version").call().out.text.split(' ').last.split('.').head.toInt
+    require(version >= 19, "Java 19 or higher is required")
+    version
   }
 
   override def javacOptions: T[Seq[String]] = {
-    Seq("--enable-preview", "--release", "19")
-  }
-
-  def chisel3Module = Some(mychisel3)
-
-  def chisel3PluginJar = T {
-    Some(mychisel3.plugin.jar())
+    Seq("--enable-preview", "--source", javacVersion().toString)
   }
 
   def jextractTarGz = T.persistent {
-    Util.download(s"https://download.java.net/java/early_access/jextract/2/openjdk-19-jextract+2-3_linux-x64_bin.tar.gz", os.rel / "jextract.tar.gz")
-    PathRef(T.dest / "jextract.tar.gz")
+    val f = T.dest / "jextract.tar.gz"
+    if (!os.exists(f))
+      Util.download(s"https://download.java.net/java/early_access/jextract/2/openjdk-19-jextract+2-3_linux-x64_bin.tar.gz", os.rel / "jextract.tar.gz")
+    PathRef(f)
   }
 
   def jextract = T.persistent {
@@ -77,8 +119,8 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
     val f = os.temp()
     os.proc(
       jextract().path,
-      circt.install().path / "include" / "circt-c" / "Dialect" / "FIRRTL.h",
-      "-I", circt.install().path / "include",
+      circt.installDirectory() / "include" / "circt-c" / "Dialect" / "FIRRTL.h",
+      "-I", circt.installDirectory() / "include",
       "--dump-includes", f
     ).call()
     os.read.lines(f).filter(s => s.nonEmpty && !s.startsWith("#"))
@@ -116,13 +158,12 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
   }
 
   override def generatedSources: T[Seq[PathRef]] = T {
-    circt.circtTag()
-    circt.llvmTag()
+    circt.install()
     os.proc(
       Seq(
         jextract().path.toString,
-        (circt.install().path / "include" / "circt-c" / "Dialect" / "FIRRTL.h").toString,
-        "-I", (circt.install().path / "include").toString,
+        (circt.installDirectory() / "include" / "circt-c" / "Dialect" / "FIRRTL.h").toString,
+        "-I", (circt.installDirectory() / "include").toString,
         "-t", "org.llvm.circt.firrtl",
         "-l", "CIRCTCAPIFIRRTL",
         "--header-class-name", "CIRCTCAPIFIRRTL",
@@ -135,64 +176,41 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with Scalafm
         includeUnions().flatMap(f => Seq("--include-union", f)) ++
         includeVars().flatMap(f => Seq("--include-var", f))
     ).call()
-    Lib.findSourceFiles(os.walk(T.dest).map(PathRef(_)), Seq("java")).map(PathRef(_))
+    Lib.findSourceFiles(os.walk(T.dest).map(PathRef(_)), Seq("java")).distinct.map(PathRef(_))
+  }
+
+  // mill doesn't happy with the --enable-preview flag, so we work around it
+  final override def compile: T[mill.scalalib.api.CompilationResult] = T {
+    os.proc(Seq("javac", "-d", T.dest.toString) ++ javacOptions() ++ allSourceFiles().map(_.path.toString)).call(T.dest)
+    mill.scalalib.api.CompilationResult(os.root, PathRef(T.dest))
+  }
+}
+
+object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule
+  with ScalaModule
+  with ScalafmtModule {
+  m =>
+  def scalaVersion = T {
+    v.scala
+  }
+
+  def circtJextractModule = `circt-jextract`
+
+  def chisel3Module = Some(mychisel3)
+
+  def chisel3PluginJar = T {
+    Some(mychisel3.plugin.jar())
   }
 
   object tests extends Tests with TestModule.Utest {
-    def scalacOptions = {
-      m.scalacOptions()
-    }
-
     override def forkArgs: T[Seq[String]] = {
       Seq(
         "--enable-native-access=ALL-UNNAMED",
         "--enable-preview",
-        s"-Djava.library.path=${circt.install().path / "lib"}"
+        s"-Djava.library.path=${circt.installDirectory() / "lib"}"
       )
     }
 
     def ivyDeps = Agg(ivy"com.lihaoyi::utest:0.8.1")
-  }
-}
-
-object circt extends Module {
-  def circtSourcePath = os.pwd / "dependencies" / "circt"
-
-  def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
-
-  def circtTag = T.input {
-    os.proc("git", "describe", "--dirty").call(circtSourcePath)
-  }
-
-  def llvmTag = T.input {
-    os.proc("git", "describe", "--dirty").call(llvmSourcePath)
-  }
-
-  def install = T.persistent {
-    circtTag()
-    llvmTag()
-    os.proc(
-      "cmake",
-      "-B", T.dest,
-      "-G", "Ninja",
-      s"-DCMAKE_INSTALL_PREFIX=${T.dest / "install"}",
-      "-DCMAKE_BUILD_TYPE=Release",
-      "-DLLVM_ENABLE_PROJECTS=mlir",
-      "-DLLVM_ENABLE_ASSERTIONS=OFF",
-      "-DLLVM_BUILD_EXAMPLES=OFF",
-      "-DLLVM_ENABLE_OCAMLDOC=OFF",
-      "-DLLVM_ENABLE_BINDINGS=OFF",
-      "-DLLVM_CCACHE_BUILD=OFF",
-      "-DLLVM_BUILD_TOOLS=OFF",
-      "-DLLVM_OPTIMIZED_TABLEGEN=ON",
-      "-DLLVM_USE_SPLIT_DWARF=ON",
-      "-DLLVM_BUILD_LLVM_DYLIB=OFF",
-      "-DLLVM_LINK_LLVM_DYLIB=OFF",
-      "-DLLVM_EXTERNAL_PROJECTS=circt",
-      "-DBUILD_SHARED_LIBS=ON",
-      s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
-    ).call(llvmSourcePath / "llvm")
-    os.proc("ninja", "install").call(T.dest)
-    PathRef(T.dest / "install")
   }
 }
