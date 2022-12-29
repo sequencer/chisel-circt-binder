@@ -133,6 +133,8 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "firrtlSetErrorHandler",
       "firrtlVisitCircuit",
       "firrtlVisitModule",
+      "firrtlVisitExtModule",
+      "firrtlVisitParameter",
       "firrtlVisitPort",
       "firrtlExportFirrtl",
       "firrtlDestroyString",
@@ -147,6 +149,11 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
     Seq(
       "MlirStringRef",
       "FirrtlContext",
+      "FirrtlParameterInt",
+      "FirrtlParameterDouble",
+      "FirrtlParameterString",
+      "FirrtlParameterRaw",
+      "FirrtlParameter",
       "FirrtlTypeUInt",
       "FirrtlTypeSInt",
       "FirrtlTypeClock",
@@ -166,12 +173,14 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "FirrtlErrorHandler",
       // enums (FIXME)
       "FirrtlPortDirection",
+      "FirrtlParameterKind",
       "FirrtlTypeKind",
     )
   }
 
   def includeUnions = T {
     Seq(
+      "FirrtlParameterUnion",
       "FirrtlTypeUnion",
     )
   }

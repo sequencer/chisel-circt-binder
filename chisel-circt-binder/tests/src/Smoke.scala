@@ -4,9 +4,11 @@ package tests.chisel3.circt
 
 import utest._
 import chisel3._
+import chisel3.experimental.ExtModule
 
 // TODO:
 // - Infered width of types
+// - `extmodule` and `parameter`
 
 object Smoke extends TestSuite {
   class SmokeModule extends RawModule

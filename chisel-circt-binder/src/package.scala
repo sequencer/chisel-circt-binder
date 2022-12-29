@@ -11,6 +11,7 @@ import java.lang.foreign.MemoryAddress.NULL
 import java.lang.foreign.ValueLayout._
 import org.llvm.circt.firrtl._
 import org.llvm.circt.firrtl.CIRCTCAPIFIRRTL._
+import chisel3.experimental._
 
 private[chisel3] object converter {
   // Some initialize code when JVM start.
@@ -18,8 +19,8 @@ private[chisel3] object converter {
   def convert(circuit: Circuit): ConverterContext = {
     implicit val ctx = new ConverterContext
     visitCircuit(circuit)
-    // TODO: this line is a teap code
-    firrtlExportFirrtl(SegmentAllocator.newNativeArena(ctx.memorySession), ctx.ctx);
+    val firrtl = exportFirrtl()
+    println(s"exported:\n$firrtl")
     ctx
   }
   // Context for storing a MLIR Builder
@@ -64,6 +65,11 @@ private[chisel3] object converter {
 
     //firrtlDestroyContext(ctx)
 
+    private[converter] def exportFirrtl(): String = {
+      val result = firrtlExportFirrtl(SegmentAllocator.newNativeArena(memorySession), ctx);
+      fromMlirStrRef(result)
+    }
+
     private[converter] def visitCircuit(name: String): Unit = {
       firrtlVisitCircuit(ctx, createMlirStr(name))
     }
@@ -72,10 +78,32 @@ private[chisel3] object converter {
       firrtlVisitModule(ctx, createMlirStr(name))
     }
 
+    private[converter] def visitExtModule(name: String, defName: String): Unit = {
+      firrtlVisitExtModule(ctx, createMlirStr(name), createMlirStr(defName))
+    }
+
+    private[converter] def visitParameter(name: String, param: Param): Unit = {
+      def createType(kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
+        val seg = MemorySegment.allocateNative(FirrtlType.$LAYOUT(), memorySession)
+        FirrtlType.kind$set(seg, kind)
+        set_union(FirrtlType.u$slice(seg))
+        seg
+      }
+
+      val ffiParam = param match {
+        case v: IntParam => createType(0 /* FIRRTL_PARAMETER_KIND_INT */, u => FirrtlParameterInt.value$set(u, v.value.toInt))
+        case v: DoubleParam => createType(1 /* FIRRTL_PARAMETER_KIND_DOUBLE */, u => FirrtlParameterDouble.value$set(u, v.value))
+        case v: StringParam => createType(2 /* FIRRTL_PARAMETER_KIND_STRING */, u => FirrtlParameterString.value$slice(u).copyFrom(createMlirStr(v.value)))
+        case v: RawParam => createType(3 /* FIRRTL_PARAMETER_KIND_RAW */, u => FirrtlParameterRaw.value$slice(u).copyFrom(createMlirStr(v.value)))
+      }
+
+      firrtlVisitParameter(ctx, createMlirStr(name), ffiParam)
+    }
+
     private[converter] def visitPort(name: String, port: Port): Unit = {
       import chisel3.SpecifiedDirection._;
 
-      def createType[T](kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
+      def createType(kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
         val seg = MemorySegment.allocateNative(FirrtlType.$LAYOUT(), memorySession)
         FirrtlType.kind$set(seg, kind)
         set_union(FirrtlType.u$slice(seg))
@@ -135,6 +163,9 @@ private[chisel3] object converter {
       firrtlVisitPort(ctx, createMlirStr(name), dir, ty);
     }
   }
+  def exportFirrtl()(implicit ctx: ConverterContext): String = {
+    ctx.exportFirrtl()
+  }
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
     ctx.visitCircuit(circuit.name)
 
@@ -147,6 +178,15 @@ private[chisel3] object converter {
   }
   def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
+
+    defBlackBox.id match {
+      case extModule: ExtModule => ctx.visitExtModule(defBlackBox.name, "")
+    }
+
+    // TODO: `defBlackBox.params` or `(defBlackBox.id as ExtModule).params`, which one shoule we use?
+    defBlackBox.params.foreach { case (name, value) =>
+      visitParameter(name, value)
+    }
 
     defBlackBox.ports.foreach { port =>
       visitPort(port)
@@ -245,6 +285,9 @@ private[chisel3] object converter {
     defInstance.ports.foreach { port =>
       visitPort(port)
     }
+  }
+  def visitParameter(name: String, param: Param)(implicit ctx: ConverterContext): Unit = {
+    ctx.visitParameter(name, param)
   }
   def visitPort(port: Port)(implicit ctx: ConverterContext): Unit = {
     ctx.visitPort(Converter.getRef(port.id, port.sourceInfo).name, port)
