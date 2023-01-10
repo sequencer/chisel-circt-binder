@@ -4,7 +4,7 @@ package tests.chisel3.circt
 
 import utest._
 import chisel3._
-import chisel3.experimental.ExtModule
+import chisel3.experimental._
 
 // TODO:
 // - Infered width of types
@@ -13,7 +13,7 @@ import chisel3.experimental.ExtModule
 object Smoke extends TestSuite {
   class SmokeModule extends RawModule
 
-  class PortTestModule extends RawModule {
+  class PortTestModule extends Module {
     val in = IO(Input(UInt(8.W)))
     val out = IO(Output(UInt(8.W)))
     val flipped = IO(Flipped(Output(UInt(8.W))))
@@ -34,6 +34,11 @@ object Smoke extends TestSuite {
       val out = Output(UInt(8.W))
     }))
     val nestedVec = IO(Input(Vec(2, Vec(3, UInt(8.W)))))
+
+    val a1 = IO(Analog(8.W))
+    val a2 = IO(new Bundle { var sub = Analog(8.W) })
+    val a3 = IO(new Bundle { var sub = new Bundle { var sub = Analog(8.W) } })
+    attach(a3.sub.sub, a2.sub)
   }
 
   val tests = Tests {
