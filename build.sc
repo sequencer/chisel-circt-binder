@@ -136,6 +136,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "firrtlVisitExtModule",
       "firrtlVisitParameter",
       "firrtlVisitPort",
+      "firrtlVisitStatement",
       "firrtlExportFirrtl",
       "firrtlDestroyString",
     )
@@ -164,6 +165,9 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "FirrtlTypeBundleField",
       "FirrtlTypeBundle",
       "FirrtlType",
+      "FirrtlStatementAttachOperand",
+      "FirrtlStatementAttach",
+      "FirrtlStatement",
     )
   }
 
@@ -175,6 +179,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "FirrtlPortDirection",
       "FirrtlParameterKind",
       "FirrtlTypeKind",
+      "FirrtlStatementKind",
     )
   }
 
@@ -182,6 +187,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
     Seq(
       "FirrtlParameterUnion",
       "FirrtlTypeUnion",
+      "FirrtlStatementUnion",
     )
   }
 

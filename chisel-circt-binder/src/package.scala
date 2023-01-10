@@ -162,6 +162,26 @@ private[chisel3] object converter {
 
       firrtlVisitPort(ctx, createMlirStr(name), dir, ty);
     }
+
+    private[converter] def _createStmt(kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
+      val seg = MemorySegment.allocateNative(FirrtlStatement.$LAYOUT(), memorySession)
+      FirrtlStatement.kind$set(seg, kind)
+      set_union(FirrtlStatement.u$slice(seg))
+      seg
+    }
+
+    private[converter] def visitAttach(exprs: Seq[String]): Unit = {
+      val stmt = _createStmt(0 /* FIRRTL_STATEMENT_KIND_ATTACH */, u => {
+        val operandsSeg = MemorySegment.allocateNative(FirrtlStatementAttachOperand.sizeof() * exprs.length, memorySession)
+        exprs.zipWithIndex.foreach { case(s, i) => {
+          val operand = operandsSeg.asSlice(FirrtlStatementAttachOperand.sizeof() * i, FirrtlStatementAttachOperand.sizeof())
+          FirrtlStatementAttachOperand.expr$slice(operand).copyFrom(createMlirStr(s))
+        }}
+        FirrtlStatementAttach.operands$set(u, operandsSeg.address())
+        FirrtlStatementAttach.count$set(u, exprs.length)
+      })
+      firrtlVisitStatement(ctx, stmt.address());
+    }
   }
   def exportFirrtl()(implicit ctx: ConverterContext): String = {
     ctx.exportFirrtl()
@@ -256,7 +276,7 @@ private[chisel3] object converter {
     // TODO: Call C-API Here
   }
   def visitAttach(attach: Attach)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API Here
+    ctx.visitAttach(attach.locs.map(_.localName));
   }
   def visitConnect(connect: Connect)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
