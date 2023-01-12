@@ -39,6 +39,23 @@ object Smoke extends TestSuite {
     val a2 = IO(new Bundle { var sub = Analog(8.W) })
     val a3 = IO(new Bundle { var sub = new Bundle { var sub = Analog(8.W) } })
     attach(a3.sub.sub, a2.sub)
+
+    val width: Int = 32
+    val io = IO(new Bundle {
+      val enable = Input(Bool())
+      val write = Input(Bool())
+      val addr = Input(UInt(10.W))
+      val dataIn = Input(UInt(width.W))
+      val dataOut = Output(UInt(width.W))
+    })
+
+    val mem = SyncReadMem(1024, UInt(width.W))
+    io.dataOut := mem.read(io.dataOut, io.enable && !io.write)
+    when(io.enable) {
+      when(io.write) {
+        mem.write(io.addr, io.dataIn)
+      }
+    }
   }
 
   val tests = Tests {
@@ -62,7 +79,8 @@ object Smoke extends TestSuite {
     //  println(chisel3.stage.ChiselStage.emitFirrtl(new SmokeModule))
     //}
     test("port (without binder") {
-      println(chisel3.stage.ChiselStage.emitFirrtl(new PortTestModule))
+      println(chisel3.stage.ChiselStage.emitChirrtl(new PortTestModule))
+      // println(chisel3.stage.ChiselStage.emitFirrtl(new PortTestModule))
     }
   }
 

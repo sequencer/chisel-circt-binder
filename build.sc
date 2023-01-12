@@ -167,6 +167,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "FirrtlType",
       "FirrtlStatementAttachOperand",
       "FirrtlStatementAttach",
+      "FirrtlStatementSeqMemory",
       "FirrtlStatement",
     )
   }
@@ -179,6 +180,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "FirrtlPortDirection",
       "FirrtlParameterKind",
       "FirrtlTypeKind",
+      "FirrtlReadUnderWrite",
       "FirrtlStatementKind",
     )
   }

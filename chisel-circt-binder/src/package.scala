@@ -100,9 +100,10 @@ private[chisel3] object converter {
       firrtlVisitParameter(ctx, createMlirStr(name), ffiParam)
     }
 
-    private[converter] def visitPort(name: String, port: Port): Unit = {
-      import chisel3.SpecifiedDirection._;
+    // TODO: We should use enum constants here instead of literal integers, but because of a jextract bug they are not generated.
+    //       I have reported this bug (internal review ID: 9074500), currently it is not public.
 
+    private[converter] def firTypeToFfiType(ty: fir.Type): MemorySegment = {
       def createType(kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
         val seg = MemorySegment.allocateNative(FirrtlType.$LAYOUT(), memorySession)
         FirrtlType.kind$set(seg, kind)
@@ -117,40 +118,39 @@ private[chisel3] object converter {
         }
       }
 
-      // TODO: We should use enum constants here instead of literal integers, but because of a jextract bug they are not generated.
-      //       I have reported this bug (internal review ID: 9074500), currently it is not public.
-
-      def firTypeToFfiType(ty: fir.Type): MemorySegment = {
-        ty match {
-          case t: fir.UIntType => createType(0 /* FIRRTL_TYPE_KIND_UINT */, u => FirrtlTypeUInt.width$set(u, convertFirWidth(t.width)))
-          case t: fir.SIntType => createType(1 /* FIRRTL_TYPE_KIND_SINT */, u => FirrtlTypeSInt.width$set(u, convertFirWidth(t.width)))
-          case _: fir.FixedType => /* 2 FIRRTL_TYPE_KIND_FIXED */ throw new AssertionError("FixedPoint type is not supported yet in CIRCT")
-          case _: fir.IntervalType => /* 3 FIRRTL_TYPE_KIND_INTERVAL */ throw new AssertionError("Interval type is not supported yet in CIRCT")
-          case fir.ClockType => createType(4 /* FIRRTL_TYPE_KIND_CLOCK */, _ => {})
-          case fir.ResetType => createType(5 /* FIRRTL_TYPE_KIND_RESET */, _ => {})
-          case fir.AsyncResetType => createType(6 /* FIRRTL_TYPE_KIND_ASYNC_RESET */, _ => {})
-          case t: fir.AnalogType => createType(7 /* FIRRTL_TYPE_KIND_ANALOG */, u => FirrtlTypeAnalog.width$set(u, convertFirWidth(t.width)))
-          case t: fir.VectorType => createType(8 /* FIRRTL_TYPE_KIND_VECTOR */, u => {
-            FirrtlTypeVector.type$set(u, firTypeToFfiType(t.tpe).address())
-            FirrtlTypeVector.count$set(u, t.size)
-          })
-          case t: fir.BundleType => createType(9 /* FIRRTL_TYPE_KIND_BUNDLE */, u => {
-            val fieldsSeg = MemorySegment.allocateNative(FirrtlTypeBundleField.sizeof() * t.fields.length, memorySession)
-            t.fields.zipWithIndex.foreach(fi => {
-              val (f, i) = fi;
-              val field = fieldsSeg.asSlice(FirrtlTypeBundleField.sizeof() * i, FirrtlTypeBundleField.sizeof())
-              FirrtlTypeBundleField.flip$set(field, f.flip match {
-                case fir.Default => false
-                case fir.Flip => true
-              })
-              FirrtlTypeBundleField.name$slice(field).copyFrom(createMlirStr(f.name))
-              FirrtlTypeBundleField.type$set(field, firTypeToFfiType(f.tpe).address())
+      ty match {
+        case t: fir.UIntType => createType(0 /* FIRRTL_TYPE_KIND_UINT */, u => FirrtlTypeUInt.width$set(u, convertFirWidth(t.width)))
+        case t: fir.SIntType => createType(1 /* FIRRTL_TYPE_KIND_SINT */, u => FirrtlTypeSInt.width$set(u, convertFirWidth(t.width)))
+        case _: fir.FixedType => /* 2 FIRRTL_TYPE_KIND_FIXED */ throw new AssertionError("FixedPoint type is not supported yet in CIRCT")
+        case _: fir.IntervalType => /* 3 FIRRTL_TYPE_KIND_INTERVAL */ throw new AssertionError("Interval type is not supported yet in CIRCT")
+        case fir.ClockType => createType(4 /* FIRRTL_TYPE_KIND_CLOCK */, _ => {})
+        case fir.ResetType => createType(5 /* FIRRTL_TYPE_KIND_RESET */, _ => {})
+        case fir.AsyncResetType => createType(6 /* FIRRTL_TYPE_KIND_ASYNC_RESET */, _ => {})
+        case t: fir.AnalogType => createType(7 /* FIRRTL_TYPE_KIND_ANALOG */, u => FirrtlTypeAnalog.width$set(u, convertFirWidth(t.width)))
+        case t: fir.VectorType => createType(8 /* FIRRTL_TYPE_KIND_VECTOR */, u => {
+          FirrtlTypeVector.type$set(u, firTypeToFfiType(t.tpe).address())
+          FirrtlTypeVector.count$set(u, t.size)
+        })
+        case t: fir.BundleType => createType(9 /* FIRRTL_TYPE_KIND_BUNDLE */, u => {
+          val fieldsSeg = MemorySegment.allocateNative(FirrtlTypeBundleField.sizeof() * t.fields.length, memorySession)
+          t.fields.zipWithIndex.foreach(fi => {
+            val (f, i) = fi;
+            val field = fieldsSeg.asSlice(FirrtlTypeBundleField.sizeof() * i, FirrtlTypeBundleField.sizeof())
+            FirrtlTypeBundleField.flip$set(field, f.flip match {
+              case fir.Default => false
+              case fir.Flip => true
             })
-            FirrtlTypeBundle.fields$set(u, fieldsSeg.address())
-            FirrtlTypeBundle.count$set(u, t.fields.length)
+            FirrtlTypeBundleField.name$slice(field).copyFrom(createMlirStr(f.name))
+            FirrtlTypeBundleField.type$set(field, firTypeToFfiType(f.tpe).address())
           })
-        }
+          FirrtlTypeBundle.fields$set(u, fieldsSeg.address())
+          FirrtlTypeBundle.count$set(u, t.fields.length)
+        })
       }
+    }
+
+    private[converter] def visitPort(name: String, port: Port): Unit = {
+      import chisel3.SpecifiedDirection._;
 
       val firPort = Converter.convert(port);
 
@@ -158,9 +158,8 @@ private[chisel3] object converter {
         case fir.Input  => 0 // FIRRTL_PORT_DIRECTION_INPUT
         case fir.Output => 1 // FIRRTL_PORT_DIRECTION_OUTPUT
       }
-      val ty = firTypeToFfiType(firPort.tpe)
 
-      firrtlVisitPort(ctx, createMlirStr(name), dir, ty);
+      firrtlVisitPort(ctx, createMlirStr(name), dir, firTypeToFfiType(firPort.tpe));
     }
 
     private[converter] def _createStmt(kind: Int, set_union: (MemorySegment) => Unit): MemorySegment = {
@@ -179,6 +178,19 @@ private[chisel3] object converter {
         }}
         FirrtlStatementAttach.operands$set(u, operandsSeg.address())
         FirrtlStatementAttach.count$set(u, exprs.length)
+      })
+      firrtlVisitStatement(ctx, stmt.address());
+    }
+
+    private[converter] def visitDefSeqMemory(name: String, ty: fir.Type, size: Int, ruw: fir.ReadUnderWrite.Value): Unit = {
+      val stmt = _createStmt(1 /* FIRRTL_STATEMENT_KIND_SEQ_MEMORY */, u => {
+        FirrtlStatementSeqMemory.name$slice(u).copyFrom(createMlirStr(name))
+        FirrtlStatementSeqMemory.type$slice(u).copyFrom(firTypeToFfiType(new fir.VectorType(ty, size)))
+        FirrtlStatementSeqMemory.readUnderWrite$set(u, ruw match {
+          case fir.ReadUnderWrite.Undefined => 0 /* FIRRTL_READ_UNDER_WRITE_UNDEFINED */
+          case fir.ReadUnderWrite.New => 1 /* FIRRTL_READ_UNDER_WRITE_NEW */
+          case fir.ReadUnderWrite.Old => 2 /* FIRRTL_READ_UNDER_WRITE_OLD */
+        })
       })
       firrtlVisitStatement(ctx, stmt.address());
     }
@@ -328,6 +340,9 @@ private[chisel3] object converter {
     // TODO: Call C-API here
   }
   def visitDefSeqMemory(defSeqMemory: DefSeqMemory)(implicit ctx: ConverterContext): Unit = {
+    val name = Converter.getRef(defSeqMemory.id, defSeqMemory.sourceInfo).name
+    val ty = Converter.extractType(defSeqMemory.t, defSeqMemory.sourceInfo)
+    ctx.visitDefSeqMemory(name, ty, defSeqMemory.size.toInt, defSeqMemory.readUnderWrite)
     // TODO: Call C-API here
   }
   def visitDefWire(defWire: DefWire)(implicit ctx: ConverterContext): Unit = {
