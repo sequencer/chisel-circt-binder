@@ -51,7 +51,7 @@ trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule with ScalaM
   }
 
   override def javacOptions = T {
-    super.javacOptions() ++ Seq("--enable-preview", "--release", "19")
+    super.javacOptions() ++ Seq("--enable-preview", "--release", "20")
   }
 
   override def ivyDeps = T {

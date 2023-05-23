@@ -63,8 +63,6 @@ private[chisel3] object converter {
         visitDefInvalid(defInvalid)
       case otherwiseEnd: OtherwiseEnd =>
         visitOtherwiseEnd(otherwiseEnd)
-      case partialConnect: PartialConnect =>
-        visitPartialConnect(partialConnect)
       case whenBegin: WhenBegin =>
         visitWhenBegin(whenBegin)
       case whenEnd: WhenEnd =>
@@ -119,9 +117,6 @@ private[chisel3] object converter {
     // TODO: Call C-API here
   }
   def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
-  }
-  def visitPartialConnect(partialConnect: PartialConnect)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
   def visitWhenBegin(whenBegin: WhenBegin)(implicit ctx: ConverterContext): Unit = {
