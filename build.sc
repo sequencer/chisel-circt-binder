@@ -113,15 +113,45 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
   def includeFunctions = T {
     Seq(
       "mlirContextCreate",
+      "mlirContextDestroy",
       "mlirGetDialectHandle__firrtl__",
-      "mlirDialectHandleLoadDialect"
+      "mlirDialectHandleLoadDialect",
+      // "mlirStringRefCreate", // inline function cannot be generated
+      "mlirStringRefCreateFromCString",
+      "mlirLocationUnknownGet",
+      "mlirModuleCreateEmpty",
+      "mlirModuleDestroy",
+      "mlirModuleGetBody",
+      "mlirModuleGetOperation",
+      "mlirOperationStateGet",
+      "mlirNamedAttributeGet",
+      "mlirIdentifierGet",
+      "mlirAttributeParseGet",
+      "mlirOperationStateAddAttributes",
+      "mlirRegionCreate",
+      "mlirOperationCreate",
+      "mlirBlockCreate",
+      "mlirBlockAppendOwnedOperation",
+      "mlirRegionAppendOwnedBlock",
+      "mlirOperationStateAddOwnedRegions",
+      "mlirOperationDump",
+      "mlirExportVerilog"
     )
   }
 
   def includeStructs = T {
     Seq(
       "MlirContext",
-      "MlirDialectHandle"
+      "MlirDialectHandle",
+      "MlirStringRef",
+      "MlirLocation",
+      "MlirModule",
+      "MlirBlock",
+      "MlirRegion",
+      "MlirOperation",
+      "MlirOperationState",
+      "MlirNamedAttribute",
+      "MlirStringCallback"
     )
   }
 
@@ -143,10 +173,10 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
     os.proc(
       Seq(
         jextract().path.toString,
-        (circt.installDirectory() / "include" / "circt-c" / "Dialect" / "FIRRTL.h").toString,
+        "chisel-circt-binder/jextract-headers.h",
         "-I", (circt.installDirectory() / "include").toString,
         "-I", (circt.llvmSourcePath / "mlir" / "include").toString,
-        "-t", "org.llvm.circt.firrtl",
+        "-t", "org.llvm.circt",
         "-l", "MLIRCAPIIR",
         "-l", "CIRCTCAPIFIRRTL",
         "-l", "CIRCTCAPIExportVerilog",
@@ -154,6 +184,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
         "-l", "CIRCTExportFIRRTL",
         "-l", "CIRCTExportVerilog",
         "-l", "MLIRCAPIRegisterEverything",
+        "--header-class-name", "c_api",
         "--source",
         "--output", T.dest.toString
       ) ++ includeFunctions().flatMap(f => Seq("--include-function", f)) ++

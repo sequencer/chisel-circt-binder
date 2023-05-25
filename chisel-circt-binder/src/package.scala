@@ -2,7 +2,12 @@
 
 package chisel3.circt
 
+import java.lang.foreign._
+import java.lang.foreign.MemorySegment.NULL
+import java.lang.foreign.ValueLayout._
 import chisel3.internal.firrtl._
+import org.llvm.circt._
+import org.llvm.circt.c_api._
 
 private[chisel3] object converter {
   // Some initialize code when JVM start.
@@ -10,6 +15,7 @@ private[chisel3] object converter {
   def convert(circuit: Circuit): ConverterContext = {
     implicit val ctx = new ConverterContext
     visitCircuit(circuit)
+    ctx.dump() // debug
     ctx
   }
   // Context for storing a MLIR Builder
@@ -20,12 +26,101 @@ private[chisel3] object converter {
     // TODO
     def firrtl: String = ""
 
+    def arena = Arena.openConfined()
+
+    val ctx = mlirContextCreate(arena)
+    val firrtlDialect = mlirGetDialectHandle__firrtl__(arena)
+    mlirDialectHandleLoadDialect(arena, firrtlDialect, ctx)
+
+    val unkLoc = mlirLocationUnknownGet(arena, ctx)
+    val module = mlirModuleCreateEmpty(arena, unkLoc)
+    val moduleBody = mlirModuleGetBody(arena, module)
+
+    var circuit:       MemorySegment = NULL
+    var circuitRegion: MemorySegment = NULL
+    var circuitBlock:  MemorySegment = NULL
+    var firModule:     MemorySegment = NULL
+
+    private[converter] def createMlirStr(str: String): MemorySegment = {
+      val strBytes = str.getBytes()
+      val strSeg =
+        MemorySegment.allocateNative(strBytes.length + 1, arena.scope())
+      strSeg.copyFrom(MemorySegment.ofArray(strBytes))
+      mlirStringRefCreateFromCString(arena, strSeg)
+    }
+
+    private[converter] def createNamedAttrs(
+      attrs: Seq[MemorySegment]
+    ): (MemorySegment, Int) = {
+      val attrsSeg = MemorySegment.allocateNative(
+        MlirNamedAttribute.sizeof() * attrs.length,
+        arena.scope()
+      )
+      attrs.zipWithIndex.foreach {
+        case (attr: MemorySegment, i: Int) => {
+          val slice = attrsSeg.asSlice(
+            MlirNamedAttribute.sizeof() * i,
+            MlirNamedAttribute.sizeof()
+          )
+          slice.copyFrom(attr)
+        }
+      }
+      (attrsSeg, attrs.length)
+    }
+
+    private[converter] def dump(): Unit = {
+      mlirOperationDump(mlirModuleGetOperation(arena, module))
+    }
+
     private[converter] def visitCircuit(name: String): Unit = {
-      // TODO: Call C-API Here
+      circuit = mlirOperationStateGet(arena, createMlirStr("firrtl.circuit"), unkLoc)
+      circuitRegion = mlirRegionCreate(arena)
+      circuitBlock = mlirBlockCreate(arena, 0, NULL, NULL)
+
+      mlirRegionAppendOwnedBlock(circuitRegion, circuitBlock)
+      mlirOperationStateAddOwnedRegions(circuit, 1, circuitRegion)
+
+      val (attrs, length) = createNamedAttrs(
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            mlirAttributeParseGet(arena, ctx, createMlirStr("\"" + name + "\""))
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            mlirAttributeParseGet(arena, ctx, createMlirStr("[]"))
+          )
+        )
+      )
+      mlirOperationStateAddAttributes(circuit, length, attrs)
+
+      val circuitOp = mlirOperationCreate(arena, circuit)
+      mlirBlockAppendOwnedOperation(moduleBody, circuitOp)
     }
 
     private[converter] def visitDefModule(name: String): Unit = {
-      // TODO: Call C-API Here
+      firModule = mlirOperationStateGet(arena, createMlirStr("firrtl.module"), unkLoc)
+
+      val (attrs, length) = createNamedAttrs(
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("sym_name")),
+            mlirAttributeParseGet(arena, ctx, createMlirStr("\"" + name + "\""))
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            mlirAttributeParseGet(arena, ctx, createMlirStr("[]"))
+          )
+        )
+      )
+      mlirOperationStateAddAttributes(firModule, length, attrs)
+
+      val moduleOp = mlirOperationCreate(arena, firModule)
+      mlirBlockAppendOwnedOperation(circuitBlock, moduleOp)
     }
   }
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
