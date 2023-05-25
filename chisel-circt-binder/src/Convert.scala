@@ -15,11 +15,12 @@ object Convert extends Phase {
   override def optionalPrerequisiteOf = Seq.empty
   override def invalidates(a: Phase) = false
 
-  def transform(annotations: AnnotationSeq): AnnotationSeq = annotations.flatMap {
-    case ChiselCircuitAnnotation(circuit) =>
-      converter.convert(circuit)
-      // TODO: return some handler but don't return the circuit
-      None
-    case a => Some(a)
-  }
+  def transform(annotations: AnnotationSeq): AnnotationSeq =
+    annotations.flatMap {
+      case ChiselCircuitAnnotation(circuit) =>
+        converter.convert(circuit)
+        // TODO: return some handler but don't return the circuit
+        None
+      case a => Some(a)
+    }
 }

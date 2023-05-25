@@ -37,14 +37,22 @@ private[chisel3] object converter {
         visitDefModule(defModule)
     }
   }
-  def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit ctx: ConverterContext): Unit = {
+  def visitDefBlackBox(
+    defBlackBox: DefBlackBox
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API Here
 
     defBlackBox.ports.foreach { port =>
       visitPort(port)
     }
   }
-  def visitDefModule(defModule: DefModule)(implicit ctx: ConverterContext): Unit = {
+  def visitDefModule(
+    defModule: DefModule
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     ctx.visitDefModule(defModule.name)
     defModule.ports.foreach { port =>
       visitPort(port)
@@ -101,7 +109,11 @@ private[chisel3] object converter {
         visitVerfiStop(stop)
     }
   }
-  def visitAltBegin(altBegin: AltBegin)(implicit ctx: ConverterContext): Unit = {
+  def visitAltBegin(
+    altBegin: AltBegin
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API Here
   }
   def visitAttach(attach: Attach)(implicit ctx: ConverterContext): Unit = {
@@ -110,22 +122,42 @@ private[chisel3] object converter {
   def visitConnect(connect: Connect)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
   }
-  def visitConnectInit(connectInit: ConnectInit)(implicit ctx: ConverterContext): Unit = {
+  def visitConnectInit(
+    connectInit: ConnectInit
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefInvalid(defInvalid: DefInvalid)(implicit ctx: ConverterContext): Unit = {
+  def visitDefInvalid(
+    defInvalid: DefInvalid
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
-  def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd)(implicit ctx: ConverterContext): Unit = {
+  def visitOtherwiseEnd(
+    otherwiseEnd: OtherwiseEnd
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
-  def visitWhenBegin(whenBegin: WhenBegin)(implicit ctx: ConverterContext): Unit = {
+  def visitWhenBegin(
+    whenBegin: WhenBegin
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
   def visitWhenEnd(whenEnd: WhenEnd)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefInstance(defInstance: DefInstance)(implicit ctx: ConverterContext): Unit = {
+  def visitDefInstance(
+    defInstance: DefInstance
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API Here
 
     defInstance.ports.foreach { port =>
@@ -135,22 +167,42 @@ private[chisel3] object converter {
   def visitPort(port: Port)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefMemPort(defMemPort: DefMemPort[_])(implicit ctx: ConverterContext): Unit = {
+  def visitDefMemPort(
+    defMemPort: DefMemPort[_]
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefMemory(defMemory: DefMemory)(implicit ctx: ConverterContext): Unit = {
+  def visitDefMemory(
+    defMemory: DefMemory
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefPrim(defPrim: DefPrim[_])(implicit ctx: ConverterContext): Unit = {
+  def visitDefPrim(
+    defPrim: DefPrim[_]
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
   def visitDefReg(defReg: DefReg)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefRegInit(defRegInit: DefRegInit)(implicit ctx: ConverterContext): Unit = {
+  def visitDefRegInit(
+    defRegInit: DefRegInit
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
-  def visitDefSeqMemory(defSeqMemory: DefSeqMemory)(implicit ctx: ConverterContext): Unit = {
+  def visitDefSeqMemory(
+    defSeqMemory: DefSeqMemory
+  )(
+    implicit ctx: ConverterContext
+  ): Unit = {
     // TODO: Call C-API here
   }
   def visitDefWire(defWire: DefWire)(implicit ctx: ConverterContext): Unit = {

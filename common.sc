@@ -5,8 +5,9 @@ import mill.scalalib.publish._
 import $ivy.`de.tototec::de.tobiasroeser.mill.vcs.version::0.1.4`
 import de.tobiasroeser.mill.vcs.version.VcsVersion
 
-trait ChiselCIRCTBinderPublishModule extends PublishModule {m =>
-  def publishVersion = de.tobiasroeser.mill.vcs.version.VcsVersion.vcsState().format()
+trait ChiselCIRCTBinderPublishModule extends PublishModule { m =>
+  def publishVersion =
+    de.tobiasroeser.mill.vcs.version.VcsVersion.vcsState().format()
   def pomSettings = T {
     PomSettings(
       description = artifactName(),

@@ -28,6 +28,7 @@ object circt extends Module {
   }
 
   def cmake = T.persistent {
+    // @formatter:off
     os.proc(
       "cmake",
       "-S", llvmSourcePath / "llvm",
@@ -54,14 +55,23 @@ object circt extends Module {
       "-DBUILD_SHARED_LIBS=ON",
       s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
     ).call(T.dest)
+    // @formatter:on
     T.dest
   }
 }
 
-object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
-  with JavaModule {
+object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaModule {
   def javacVersion = T.input {
-    val version = os.proc("javac", "-version").call().out.text.split(' ').last.split('.').head.toInt
+    val version = os
+      .proc("javac", "-version")
+      .call()
+      .out
+      .text
+      .split(' ')
+      .last
+      .split('.')
+      .head
+      .toInt
     require(version >= 20, "Java 20 or higher is required")
     version
   }
@@ -73,7 +83,10 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
   def jextractTarGz = T.persistent {
     val f = T.dest / "jextract.tar.gz"
     if (!os.exists(f))
-      Util.download(s"https://download.java.net/java/early_access/jextract/1/openjdk-20-jextract+1-2_linux-x64_bin.tar.gz", os.rel / "jextract.tar.gz")
+      Util.download(
+        s"https://download.java.net/java/early_access/jextract/1/openjdk-20-jextract+1-2_linux-x64_bin.tar.gz",
+        os.rel / "jextract.tar.gz"
+      )
     PathRef(f)
   }
 
@@ -85,6 +98,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
   // Generate all possible bindings
   def dumpAllIncludes = T {
     val f = os.temp()
+    // @formatter:off
     os.proc(
       jextract().path,
       circt.installDirectory() / "include" / "circt-c" / "Dialect" / "FIRRTL.h",
@@ -92,6 +106,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
       "-I", circt.llvmSourcePath / "mlir" / "include",
       "--dump-includes", f
     ).call()
+    // @formatter:on
     os.read.lines(f).filter(s => s.nonEmpty && !s.startsWith("#"))
   }
 
@@ -99,14 +114,14 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
     Seq(
       "mlirContextCreate",
       "mlirGetDialectHandle__firrtl__",
-      "mlirDialectHandleLoadDialect",
+      "mlirDialectHandleLoadDialect"
     )
   }
 
   def includeStructs = T {
     Seq(
       "MlirContext",
-      "MlirDialectHandle",
+      "MlirDialectHandle"
     )
   }
 
@@ -124,6 +139,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
 
   override def generatedSources: T[Seq[PathRef]] = T {
     circt.install()
+    // @formatter:off
     os.proc(
       Seq(
         jextract().path.toString,
@@ -146,19 +162,24 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule
         includeUnions().flatMap(f => Seq("--include-union", f)) ++
         includeVars().flatMap(f => Seq("--include-var", f))
     ).call()
-    Lib.findSourceFiles(os.walk(T.dest).map(PathRef(_)), Seq("java")).distinct.map(PathRef(_))
+    // @formatter:on
+    Lib
+      .findSourceFiles(os.walk(T.dest).map(PathRef(_)), Seq("java"))
+      .distinct
+      .map(PathRef(_))
   }
 
   // mill doesn't happy with the --enable-preview flag, so we work around it
   final override def compile: T[mill.scalalib.api.CompilationResult] = T {
-    os.proc(Seq("javac", "-d", T.dest.toString) ++ javacOptions() ++ allSourceFiles().map(_.path.toString)).call(T.dest)
+    os.proc(
+      Seq("javac", "-d", T.dest.toString) ++ javacOptions() ++ allSourceFiles()
+        .map(_.path.toString)
+    ).call(T.dest)
     mill.scalalib.api.CompilationResult(os.root, PathRef(T.dest))
   }
 }
 
-object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule
-  with ScalaModule
-  with ScalafmtModule {
+object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with ScalaModule with ScalafmtModule {
   m =>
   def scalaVersion = T {
     v.scala
