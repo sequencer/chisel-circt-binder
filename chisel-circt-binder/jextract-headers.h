@@ -2,6 +2,6 @@
 #define JEXTRACT_HEADERS_H
 
 #include <circt-c/Dialect/FIRRTL.h>
-#include <circt-c/ExportVerilog.h>
+#include <circt-c/ExportFIRRTL.h>
 
 #endif // JEXTRACT_HEADERS_H

@@ -112,6 +112,8 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
 
   def includeFunctions = T {
     Seq(
+      //
+      // MLIR
       "mlirContextCreate",
       "mlirContextDestroy",
       "mlirGetDialectHandle__firrtl__",
@@ -126,7 +128,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirOperationStateGet",
       "mlirNamedAttributeGet",
       "mlirIdentifierGet",
-      "mlirAttributeParseGet",
+      // "mlirAttributeParseGet", // We should not "parse" anything
       "mlirOperationStateAddAttributes",
       "mlirRegionCreate",
       "mlirOperationCreate",
@@ -135,7 +137,31 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirRegionAppendOwnedBlock",
       "mlirOperationStateAddOwnedRegions",
       "mlirOperationDump",
-      "mlirExportVerilog"
+      "mlirExportFIRRTL",
+      //
+      // FIRRTL Type
+      "firrtlGetTypeUInt",
+      "firrtlGetTypeSInt",
+      "firrtlGetTypeClock",
+      "firrtlGetTypeReset",
+      "firrtlGetTypeAsyncReset",
+      "firrtlGetTypeAnalog",
+      "firrtlGetTypeVector",
+      "firrtlGetTypeBundle",
+      //
+      // FIRRTL Attribute
+      "firrtlGetAttrType",
+      "firrtlGetAttrArray",
+      "firrtlGetAttrString",
+      "firrtlGetAttrPortDirections"
+    )
+  }
+
+  def includeConstants = T {
+    Seq(
+      // enum FIRRTLPortDirection
+      "FIRRTL_PORT_DIRECTION_INPUT",
+      "FIRRTL_PORT_DIRECTION_OUTPUT"
     )
   }
 
@@ -145,18 +171,21 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "MlirDialectHandle",
       "MlirStringRef",
       "MlirLocation",
+      "MlirAttribute",
       "MlirModule",
       "MlirBlock",
       "MlirRegion",
       "MlirOperation",
       "MlirOperationState",
       "MlirNamedAttribute",
-      "MlirStringCallback"
+      "FIRRTLBundleField"
     )
   }
 
   def includeTypedefs = T {
-    Seq.empty[String]
+    Seq(
+      "MlirStringCallback"
+    )
   }
 
   def includeUnions = T {
@@ -179,6 +208,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
         "-t", "org.llvm.circt",
         "-l", "MLIRCAPIIR",
         "-l", "CIRCTCAPIFIRRTL",
+        "-l", "CIRCTCAPIExportFIRRTL",
         "-l", "CIRCTCAPIExportVerilog",
         "-l", "CIRCTFIRRTL",
         "-l", "CIRCTExportFIRRTL",
@@ -188,6 +218,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
         "--source",
         "--output", T.dest.toString
       ) ++ includeFunctions().flatMap(f => Seq("--include-function", f)) ++
+        includeConstants().flatMap(f => Seq("--include-constant", f)) ++
         includeStructs().flatMap(f => Seq("--include-struct", f)) ++
         includeTypedefs().flatMap(f => Seq("--include-typedef", f)) ++
         includeUnions().flatMap(f => Seq("--include-union", f)) ++
@@ -219,6 +250,10 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with ScalaMo
   def circtJextractModule = `circt-jextract`
 
   def chisel3Module = Some(mychisel3)
+
+  override def scalacPluginIvyDeps = Agg(
+    ivy"edu.berkeley.cs:::chisel3-plugin:3.6.0"
+  )
 
   object tests extends Tests with TestModule.Utest {
     override def forkArgs: T[Seq[String]] = {

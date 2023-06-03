@@ -5,9 +5,12 @@ package chisel3.circt
 import java.lang.foreign._
 import java.lang.foreign.MemorySegment.NULL
 import java.lang.foreign.ValueLayout._
+import scala.collection.mutable.ArrayBuffer
 import chisel3.internal.firrtl._
 import org.llvm.circt._
 import org.llvm.circt.c_api._
+import org.llvm.circt.FIRRTLBundleField
+import firrtl.{ir => fir}
 
 private[chisel3] object converter {
   // Some initialize code when JVM start.
@@ -16,6 +19,7 @@ private[chisel3] object converter {
     implicit val ctx = new ConverterContext
     visitCircuit(circuit)
     ctx.dump() // debug
+    ctx.exportFIRRTL() // debug
     ctx
   }
   // Context for storing a MLIR Builder
@@ -33,13 +37,13 @@ private[chisel3] object converter {
     mlirDialectHandleLoadDialect(arena, firrtlDialect, ctx)
 
     val unkLoc = mlirLocationUnknownGet(arena, ctx)
+    val emptyArrayAttr = firrtlGetAttrArray(arena, ctx, NULL, 0)
+
     val module = mlirModuleCreateEmpty(arena, unkLoc)
     val moduleBody = mlirModuleGetBody(arena, module)
 
-    var circuit:       MemorySegment = NULL
-    var circuitRegion: MemorySegment = NULL
-    var circuitBlock:  MemorySegment = NULL
-    var firModule:     MemorySegment = NULL
+    var circuit:   OpWithBody = null
+    var firModule: OpWithBody = null
 
     private[converter] def createMlirStr(str: String): MemorySegment = {
       val strBytes = str.getBytes()
@@ -49,13 +53,57 @@ private[chisel3] object converter {
       mlirStringRefCreateFromCString(arena, strSeg)
     }
 
+    private[converter] def fromMlirStrRef(mlirStr: MemorySegment): String = {
+      var strSlice = MlirStringRef.data$get(mlirStr).asSlice(0, MlirStringRef.length$get(mlirStr))
+      new String(strSlice.toArray(JAVA_BYTE))
+    }
+
+    private[converter] def createStrAttr(str: String): MemorySegment /* MlirAttribute */ = {
+      firrtlGetAttrString(arena, ctx, createMlirStr(str))
+    }
+
+    private[converter] def createMlirType(firType: fir.Type): MemorySegment /* MlirAttribute */ = {
+      def convertFirWidth(width: fir.Width): Int = {
+        width match {
+          case fir.UnknownWidth => -1
+          case fir.IntWidth(v)  => v.toInt
+        }
+      }
+
+      firType match {
+        case t: fir.UIntType => firrtlGetTypeUInt(arena, ctx, convertFirWidth(t.width))
+        case t: fir.SIntType => firrtlGetTypeSInt(arena, ctx, convertFirWidth(t.width))
+        case fir.ClockType      => firrtlGetTypeClock(arena, ctx)
+        case fir.ResetType      => firrtlGetTypeReset(arena, ctx)
+        case fir.AsyncResetType => firrtlGetTypeAsyncReset(arena, ctx)
+        case t: fir.AnalogType => firrtlGetTypeAnalog(arena, ctx, convertFirWidth(t.width))
+        case t: fir.VectorType =>
+          firrtlGetTypeVector(arena, ctx, createMlirType(t.tpe), t.size)
+        case t: fir.BundleType =>
+          val fieldsSeg = FIRRTLBundleField.allocateArray(t.fields.length, arena)
+          t.fields.zipWithIndex.foreach {
+            case (field, i) =>
+              val fieldSeg = fieldsSeg.asSlice(FIRRTLBundleField.sizeof() * i, FIRRTLBundleField.sizeof())
+              val flip = field.flip match {
+                case fir.Default => false
+                case fir.Flip    => true
+              }
+              FIRRTLBundleField.flip$set(fieldSeg, flip)
+              FIRRTLBundleField.name$slice(fieldSeg).copyFrom(createStrAttr(field.name))
+              FIRRTLBundleField.type$slice(fieldSeg).copyFrom(createMlirType(field.tpe))
+          }
+          firrtlGetTypeBundle(arena, ctx, fieldsSeg, t.fields.length)
+      }
+    }
+
+    private[converter] def createMlirTypeAttr(firType: fir.Type): MemorySegment /* MlirAttribute */ = {
+      firrtlGetAttrType(arena, createMlirType(firType))
+    }
+
     private[converter] def createNamedAttrs(
       attrs: Seq[MemorySegment]
     ): (MemorySegment, Int) = {
-      val attrsSeg = MemorySegment.allocateNative(
-        MlirNamedAttribute.sizeof() * attrs.length,
-        arena.scope()
-      )
+      val attrsSeg = MlirNamedAttribute.allocateArray(attrs.length, arena)
       attrs.zipWithIndex.foreach {
         case (attr: MemorySegment, i: Int) => {
           val slice = attrsSeg.asSlice(
@@ -68,59 +116,161 @@ private[chisel3] object converter {
       (attrsSeg, attrs.length)
     }
 
+    case class OpWithBody(
+      state:  (MemorySegment /* MlirOperationState */ ),
+      op:     (MemorySegment /* MlirOperation */ ),
+      region: (MemorySegment /* MlirRegion */ ),
+      block:  (MemorySegment /* MlirBlock */ ))
+
+    private[converter] def buildOpWithBody(
+      parent: Option[MemorySegment /* MlirBlock */ ],
+      opName: String,
+      attrs:  Seq[MemorySegment /* MlirNamedAttribute */ ],
+      loc:    MemorySegment /* MlirLocation */
+    ): OpWithBody = {
+      var state:  MemorySegment /* MlirOperationState */ = NULL
+      var op:     MemorySegment /* MlirOperation */ = NULL
+      var region: MemorySegment /* MlirRegion */ = NULL
+      var block:  MemorySegment /* MlirBlock */ = NULL
+
+      region = mlirRegionCreate(arena)
+      block = mlirBlockCreate(arena, 0, NULL, NULL)
+      mlirRegionAppendOwnedBlock(region, block)
+
+      state = mlirOperationStateGet(arena, createMlirStr(opName), loc)
+
+      val (mlirAttrs, length) = createNamedAttrs(attrs)
+      mlirOperationStateAddAttributes(state, length, mlirAttrs)
+      mlirOperationStateAddOwnedRegions(state, 1, region)
+
+      op = mlirOperationCreate(arena, state)
+      parent match {
+        case Some(parent) =>
+          mlirBlockAppendOwnedOperation(parent, op)
+        case None => {}
+      }
+
+      OpWithBody(state, op, region, block)
+    }
+
     private[converter] def dump(): Unit = {
       mlirOperationDump(mlirModuleGetOperation(arena, module))
     }
 
+    private[converter] def exportFIRRTL(): Unit = {
+      val cb = new MlirStringCallback {
+        def apply(message: MemorySegment, userData: MemorySegment): Unit = {
+          print(fromMlirStrRef(message))
+        }
+      }
+      val stub = MlirStringCallback.allocate(cb, arena.scope())
+      println(s"!!!")
+      mlirExportFIRRTL(arena, module, stub, NULL)
+    }
+
     private[converter] def visitCircuit(name: String): Unit = {
-      circuit = mlirOperationStateGet(arena, createMlirStr("firrtl.circuit"), unkLoc)
-      circuitRegion = mlirRegionCreate(arena)
-      circuitBlock = mlirBlockCreate(arena, 0, NULL, NULL)
-
-      mlirRegionAppendOwnedBlock(circuitRegion, circuitBlock)
-      mlirOperationStateAddOwnedRegions(circuit, 1, circuitRegion)
-
-      val (attrs, length) = createNamedAttrs(
+      circuit = buildOpWithBody(
+        Some(moduleBody),
+        "firrtl.circuit",
         Seq(
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("name")),
-            mlirAttributeParseGet(arena, ctx, createMlirStr("\"" + name + "\""))
+            createStrAttr(name)
           ),
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
-            mlirAttributeParseGet(arena, ctx, createMlirStr("[]"))
+            emptyArrayAttr
           )
-        )
+        ),
+        unkLoc
       )
-      mlirOperationStateAddAttributes(circuit, length, attrs)
-
-      val circuitOp = mlirOperationCreate(arena, circuit)
-      mlirBlockAppendOwnedOperation(moduleBody, circuitOp)
     }
 
-    private[converter] def visitDefModule(name: String): Unit = {
-      firModule = mlirOperationStateGet(arena, createMlirStr("firrtl.module"), unkLoc)
+    private[converter] def visitDefModule(defModule: DefModule): Unit = {
+      val portsLength = defModule.ports.length
 
-      val (attrs, length) = createNamedAttrs(
+      // FIXME: Currently jextract does not export `enum FIRRTLPortDirection`, so we assume the size of it is 4.
+      val sizeOfFIRRTLPortDirection = 4
+      val directionsAttr =
+        MemorySegment.allocateNative(sizeOfFIRRTLPortDirection * portsLength, arena.scope())
+      val namesAttr = MlirAttribute.allocateArray(portsLength, arena)
+      val typesAttr = MlirAttribute.allocateArray(portsLength, arena)
+      val annotationsAttr = MlirAttribute.allocateArray(portsLength, arena)
+      val locsAttr = MlirAttribute.allocateArray(portsLength, arena)
+
+      defModule.ports.zipWithIndex.foreach {
+        case (port, i) => {
+          val firPort = Converter.convert(port)
+
+          val direction = (firPort.direction match {
+            case fir.Input  => FIRRTL_PORT_DIRECTION_INPUT()
+            case fir.Output => FIRRTL_PORT_DIRECTION_OUTPUT()
+          })
+
+          def fillAttr(attrs: MemorySegment, index: Int, value: MemorySegment) = {
+            attrs
+              .asSlice(MlirAttribute.sizeof() * index, MlirAttribute.sizeof())
+              .copyFrom(value)
+          }
+
+          directionsAttr.setAtIndex(C_INT, i, direction)
+          fillAttr(namesAttr, i, createStrAttr(firPort.name))
+          fillAttr(typesAttr, i, createMlirTypeAttr(firPort.tpe))
+          fillAttr(annotationsAttr, i, emptyArrayAttr)
+          // TODO: syms
+          fillAttr(locsAttr, i, unkLoc)
+        }
+      }
+
+      firModule = buildOpWithBody(
+        Some(circuit.block),
+        "firrtl.module",
         Seq(
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("sym_name")),
-            mlirAttributeParseGet(arena, ctx, createMlirStr("\"" + name + "\""))
+            createStrAttr(defModule.name)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("portDirections")),
+            firrtlGetAttrPortDirections(arena, ctx, directionsAttr, portsLength)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("portNames")),
+            firrtlGetAttrArray(arena, ctx, namesAttr, portsLength)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("portTypes")),
+            firrtlGetAttrArray(arena, ctx, typesAttr, portsLength)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("portAnnotations")),
+            firrtlGetAttrArray(arena, ctx, annotationsAttr, portsLength)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("portSyms")),
+            emptyArrayAttr
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("portLocations")),
+            firrtlGetAttrArray(arena, ctx, locsAttr, portsLength)
           ),
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
-            mlirAttributeParseGet(arena, ctx, createMlirStr("[]"))
+            emptyArrayAttr
           )
-        )
+        ),
+        unkLoc
       )
-      mlirOperationStateAddAttributes(firModule, length, attrs)
-
-      val moduleOp = mlirOperationCreate(arena, firModule)
-      mlirBlockAppendOwnedOperation(circuitBlock, moduleOp)
     }
   }
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -132,26 +282,15 @@ private[chisel3] object converter {
         visitDefModule(defModule)
     }
   }
-  def visitDefBlackBox(
-    defBlackBox: DefBlackBox
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
+  def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here
-
-    defBlackBox.ports.foreach { port =>
-      visitPort(port)
-    }
   }
   def visitDefModule(
     defModule: DefModule
   )(
     implicit ctx: ConverterContext
   ): Unit = {
-    ctx.visitDefModule(defModule.name)
-    defModule.ports.foreach { port =>
-      visitPort(port)
-    }
+    ctx.visitDefModule(defModule)
     defModule.commands.foreach {
       // Command
       case altBegin: AltBegin =>
@@ -254,13 +393,6 @@ private[chisel3] object converter {
     implicit ctx: ConverterContext
   ): Unit = {
     // TODO: Call C-API Here
-
-    defInstance.ports.foreach { port =>
-      visitPort(port)
-    }
-  }
-  def visitPort(port: Port)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
   }
   def visitDefMemPort(
     defMemPort: DefMemPort[_]
