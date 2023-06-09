@@ -2,11 +2,40 @@
 
 package chisel3.circt
 
+import chisel3.{Aggregate, Data, Element, MemBase, Vec, VecLike}
+import chisel3.experimental.{BaseModule, SourceInfo}
+import chisel3.internal.{
+  AggregateViewBinding,
+  BundleLitBinding,
+  ChildBinding,
+  ConditionalDeclarable,
+  ConstrainedBinding,
+  CrossModuleBinding,
+  DontCareBinding,
+  ElementLitBinding,
+  LitBinding,
+  MemTypeBinding,
+  MemoryPortBinding,
+  NamedComponent,
+  OpBinding,
+  PortBinding,
+  ReadOnlyBinding,
+  RegBinding,
+  SampleElementBinding,
+  SecretPortBinding,
+  TopBinding,
+  UnconstrainedBinding,
+  VecLitBinding,
+  ViewBinding,
+  WireBinding
+}
+
 import java.lang.foreign._
 import java.lang.foreign.MemorySegment.NULL
 import java.lang.foreign.ValueLayout._
 import scala.collection.mutable.ArrayBuffer
 import chisel3.internal.firrtl._
+import firrtl.ir.HasName
 import org.llvm.circt._
 import org.llvm.circt.c_api._
 import org.llvm.circt.FIRRTLBundleField
@@ -96,9 +125,7 @@ private[chisel3] object converter {
       }
     }
 
-    private[converter] def createMlirTypeAttr(firType: fir.Type): MemorySegment /* MlirAttribute */ = {
-      firrtlGetAttrType(arena, createMlirType(firType))
-    }
+    // TODO: merge `createNamedAttrs`, `createOperands` and `createResults` into a general function
 
     private[converter] def createNamedAttrs(
       attrs: Seq[MemorySegment]
@@ -116,13 +143,87 @@ private[chisel3] object converter {
       (attrsSeg, attrs.length)
     }
 
+    private[converter] def createOperands(
+      operands: Seq[MemorySegment /* MlirValue */ ]
+    ): (MemorySegment, Int) = {
+      val operandsSeg = MlirValue.allocateArray(operands.length, arena)
+      operands.zipWithIndex.foreach {
+        case (attr: MemorySegment, i: Int) => {
+          val slice = operandsSeg.asSlice(
+            MlirValue.sizeof() * i,
+            MlirValue.sizeof()
+          )
+          slice.copyFrom(attr)
+        }
+      }
+      (operandsSeg, operands.length)
+    }
+
+    private[converter] def createResults(
+      results: Seq[MemorySegment /* MlirType */ ]
+    ): (MemorySegment, Int) = {
+      val resultsSeg = MlirType.allocateArray(results.length, arena)
+      results.zipWithIndex.foreach {
+        case (attr: MemorySegment, i: Int) => {
+          val slice = resultsSeg.asSlice(
+            MlirType.sizeof() * i,
+            MlirType.sizeof()
+          )
+          slice.copyFrom(attr)
+        }
+      }
+      (resultsSeg, results.length)
+    }
+
+    case class Op(
+      state:   (MemorySegment /* MlirOperationState */ ),
+      op:      (MemorySegment /* MlirOperation */ ),
+      results: (Seq[MemorySegment /* MlirValue */ ]))
+
     case class OpWithBody(
       state:  (MemorySegment /* MlirOperationState */ ),
       op:     (MemorySegment /* MlirOperation */ ),
       region: (MemorySegment /* MlirRegion */ ),
       block:  (MemorySegment /* MlirBlock */ ))
 
-    private[converter] def buildOpWithBody(
+    private[converter] def buildOp(
+      parent:   Option[MemorySegment /* MlirBlock */ ],
+      opName:   String,
+      attrs:    Seq[MemorySegment /* MlirNamedAttribute */ ],
+      operands: Seq[MemorySegment /* MlirValue */ ],
+      results:  Seq[MemorySegment /* MlirType */ ],
+      loc:      MemorySegment /* MlirLocation */
+    ): Op = {
+      var state: MemorySegment /* MlirOperationState */ = NULL
+      var op:    MemorySegment /* MlirOperation */ = NULL
+
+      state = mlirOperationStateGet(arena, createMlirStr(opName), loc)
+
+      val (mlirAttrs, attrsLen) = createNamedAttrs(attrs)
+      val (mlirOperands, operandsLen) = createOperands(operands)
+      val (mlirResults, resultsLen) = createResults(results)
+
+      mlirOperationStateAddAttributes(state, attrsLen, mlirAttrs)
+      mlirOperationStateAddOperands(state, operandsLen, mlirOperands)
+      mlirOperationStateAddResults(state, resultsLen, mlirResults)
+
+      op = mlirOperationCreate(arena, state)
+      parent match {
+        case Some(parent) =>
+          mlirBlockAppendOwnedOperation(parent, op)
+        case None => {}
+      }
+
+      val resultVals = results.zipWithIndex.map {
+        case (_, i) => {
+          mlirOperationGetResult(arena, op, i)
+        }
+      }
+
+      Op(state, op, resultVals)
+    }
+
+    private[converter] def buildCircuit(
       parent: Option[MemorySegment /* MlirBlock */ ],
       opName: String,
       attrs:  Seq[MemorySegment /* MlirNamedAttribute */ ],
@@ -153,6 +254,137 @@ private[chisel3] object converter {
       OpWithBody(state, op, region, block)
     }
 
+    private[converter] def buildModule(
+      parent:    Option[MemorySegment /* MlirBlock */ ],
+      opName:    String,
+      attrs:     Seq[MemorySegment /* MlirNamedAttribute */ ],
+      loc:       MemorySegment /* MlirLocation */,
+      portsLen:  Int,
+      portTypes: MemorySegment /* MlirType[] */,
+      portLocs:  MemorySegment /* MlirLocation[] */
+    ): OpWithBody = {
+      var state:  MemorySegment /* MlirOperationState */ = NULL
+      var op:     MemorySegment /* MlirOperation */ = NULL
+      var region: MemorySegment /* MlirRegion */ = NULL
+      var block:  MemorySegment /* MlirBlock */ = NULL
+
+      region = mlirRegionCreate(arena)
+      block = mlirBlockCreate(arena, portsLen, portTypes, portLocs)
+      mlirRegionAppendOwnedBlock(region, block)
+
+      state = mlirOperationStateGet(arena, createMlirStr(opName), loc)
+
+      val (mlirAttrs, length) = createNamedAttrs(attrs)
+      mlirOperationStateAddAttributes(state, length, mlirAttrs)
+      mlirOperationStateAddOwnedRegions(state, 1, region)
+
+      op = mlirOperationCreate(arena, state)
+      parent match {
+        case Some(parent) =>
+          mlirBlockAppendOwnedOperation(parent, op)
+        case None => {}
+      }
+
+      OpWithBody(state, op, region, block)
+    }
+
+    abstract class RefIndex {}
+    case class Port(index: Int) extends RefIndex
+    case class SubField(index: Int, tpe: fir.Type) extends RefIndex
+    case class SubIndex(index: Int, tpe: fir.Type) extends RefIndex
+
+    // got port index inside module
+    def portIndex(data: Data): RefIndex = data.binding.map {
+      case SecretPortBinding(enclosure) =>
+        Port(
+          enclosure
+            .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
+            .indexWhere(_._2 == data)
+        )
+      case PortBinding(enclosure) =>
+        Port(
+          enclosure
+            .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
+            .indexWhere(_._2 == data)
+        )
+      case _ => throw new Exception("got non-port data")
+    }.getOrElse(throw new Exception("got unbound data"))
+
+    // got data index for Vec or Record
+    def elementIndex(data: Data): RefIndex = data.binding.map {
+      case binding: ChildBinding =>
+        binding.parent match {
+          case vec:    Vec[_] => SubIndex(vec.elementsIterator.indexWhere(_ == data), Converter.extractType(data, null))
+          case record: chisel3.Record =>
+            SubField(
+              record.elements.size - record.elements.values.iterator.indexOf(data) - 1,
+              Converter.extractType(data, null)
+            )
+        }
+      case SampleElementBinding(vec) =>
+        SubIndex(vec.elementsIterator.indexWhere(_ == data), Converter.extractType(data, null))
+      case _ => throw new Exception("got non-child data")
+    }.getOrElse(throw new Exception("got unbound data"))
+
+    // Got Reference Index for a node
+    def referenceIndex(node: chisel3.internal.HasId, indexes: Seq[RefIndex]): Seq[RefIndex] = {
+      node match {
+        // reference to instance
+        case module: BaseModule =>
+          // access the instance
+          return indexes
+        case data: Data =>
+          // got a data
+          data.binding.getOrElse(throw new Exception("got unbound data")) match {
+            case PortBinding(enclosure)                   => return referenceIndex(enclosure, indexes :+ portIndex(data))
+            case SecretPortBinding(enclosure)             => return referenceIndex(enclosure, indexes :+ portIndex(data))
+            case ChildBinding(parent)                     => return referenceIndex(parent, indexes :+ elementIndex(data))
+            case SampleElementBinding(parent)             => return referenceIndex(parent, indexes :+ elementIndex(data))
+            case MemoryPortBinding(enclosure, visibility) => // TODO
+            case MemTypeBinding(parent)                   => // TODO
+            case _                                        => assert(false)
+          }
+        case base: MemBase[_] => // TODO
+      }
+      Seq()
+    }
+
+    private[converter] def createReference(node: Node): MemorySegment /* MlirValue */ = {
+      val idFieldIndex = mlirIdentifierGet(arena, ctx, createMlirStr("fieldIndex"))
+      val idIndex = mlirIdentifierGet(arena, ctx, createMlirStr("index"))
+      val indexType = mlirIntegerTypeGet(arena, ctx, 32)
+
+      val indexChain = referenceIndex(node.id, Seq())
+
+      // After reverse, `Port` should be the first element in the chain, so the initialization value of the `foldLeft` is unnecessary
+      indexChain.reverse.foldLeft(NULL) {
+        case (parent: MemorySegment /* MlirValue */, index: RefIndex) => {
+          index match {
+            case Port(index) =>
+              mlirBlockGetArgument(arena, firModule.block, index)
+            case SubField(index, tpe) =>
+              buildOp(
+                Some(firModule.block),
+                "firrtl.subfield",
+                Seq(mlirNamedAttributeGet(arena, idFieldIndex, mlirIntegerAttrGet(arena, indexType, index))),
+                Seq(parent),
+                Seq(createMlirType(tpe)),
+                unkLoc
+              ).results(0)
+            case SubIndex(index, tpe) =>
+              buildOp(
+                Some(firModule.block),
+                "firrtl.subindex",
+                Seq(mlirNamedAttributeGet(arena, idIndex, mlirIntegerAttrGet(arena, indexType, index))),
+                Seq(parent),
+                Seq(createMlirType(tpe)),
+                unkLoc
+              ).results(0)
+          }
+        }
+      }
+    }
+
     private[converter] def dump(): Unit = {
       mlirOperationDump(mlirModuleGetOperation(arena, module))
     }
@@ -164,12 +396,11 @@ private[chisel3] object converter {
         }
       }
       val stub = MlirStringCallback.allocate(cb, arena.scope())
-      println(s"!!!")
       mlirExportFIRRTL(arena, module, stub, NULL)
     }
 
     private[converter] def visitCircuit(name: String): Unit = {
-      circuit = buildOpWithBody(
+      circuit = buildCircuit(
         Some(moduleBody),
         "firrtl.circuit",
         Seq(
@@ -200,6 +431,9 @@ private[chisel3] object converter {
       val annotationsAttr = MlirAttribute.allocateArray(portsLength, arena)
       val locsAttr = MlirAttribute.allocateArray(portsLength, arena)
 
+      val types = MlirType.allocateArray(portsLength, arena)
+      val locs = MlirLocation.allocateArray(portsLength, arena)
+
       defModule.ports.zipWithIndex.foreach {
         case (port, i) => {
           val firPort = Converter.convert(port)
@@ -215,16 +449,25 @@ private[chisel3] object converter {
               .copyFrom(value)
           }
 
+          val mlirType = createMlirType(firPort.tpe)
+
           directionsAttr.setAtIndex(C_INT, i, direction)
           fillAttr(namesAttr, i, createStrAttr(firPort.name))
-          fillAttr(typesAttr, i, createMlirTypeAttr(firPort.tpe))
+          fillAttr(typesAttr, i, firrtlGetAttrType(arena, mlirType))
           fillAttr(annotationsAttr, i, emptyArrayAttr)
           // TODO: syms
           fillAttr(locsAttr, i, unkLoc)
+
+          types
+            .asSlice(MlirType.sizeof() * i, MlirType.sizeof())
+            .copyFrom(mlirType)
+          locs
+            .asSlice(MlirLocation.sizeof() * i, MlirLocation.sizeof())
+            .copyFrom(unkLoc)
         }
       }
 
-      firModule = buildOpWithBody(
+      firModule = buildModule(
         Some(circuit.block),
         "firrtl.module",
         Seq(
@@ -269,6 +512,20 @@ private[chisel3] object converter {
             emptyArrayAttr
           )
         ),
+        unkLoc,
+        portsLength,
+        types,
+        locs
+      )
+    }
+
+    private[converter] def visitAttach(attach: Attach): Unit = {
+      buildOp(
+        Some(firModule.block),
+        "firrtl.attach",
+        Seq.empty,
+        attach.locs.map(createReference),
+        Seq.empty,
         unkLoc
       )
     }
@@ -351,7 +608,7 @@ private[chisel3] object converter {
     // TODO: Call C-API Here
   }
   def visitAttach(attach: Attach)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API Here
+    ctx.visitAttach(attach)
   }
   def visitConnect(connect: Connect)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API Here

@@ -32,9 +32,33 @@ object Smoke extends TestSuite {
     val nestedVec = IO(Input(Vec(2, Vec(3, UInt(8.W)))))
 
     val a1 = IO(Analog(8.W))
-    val a2 = IO(new Bundle { var sub = Analog(8.W) })
-    val a3 = IO(new Bundle { var sub = new Bundle { var sub = Vec(2, Analog(8.W)) } })
-    attach(a3.sub.sub(0), a2.sub)
+    val a2 = IO(new Bundle { val sub = Analog(8.W) })
+    val a3 = IO(new Bundle { val sub1 = new Bundle { val sub2 = Vec(2, Analog(8.W)) } })
+
+    val a4 = IO(new Bundle { val s1 = Analog(8.W); val s2 = Analog(8.W) })
+    val a5 = IO(new Bundle {
+      val s1 = new Bundle {
+        val s11 = Analog(8.W)
+        val s12 = Analog(8.W)
+      }
+      val s2 = new Bundle {
+        val s21 = Analog(8.W)
+        val s22 = Analog(8.W)
+      }
+      val s3 = new Bundle {
+        val s21 = Analog(8.W)
+        val s22 = new Bundle {
+          val s221 = Analog(8.W)
+          val s222 = Analog(8.W)
+        }
+      }
+    })
+
+    attach(a1)
+    attach(a5.s3.s22.s222)
+    attach(a3.sub1.sub2(0), a2.sub)
+    attach(a4.s1)
+    attach(a4.s2)
 
     val width: Int = 32
     val io = IO(new Bundle {

@@ -127,12 +127,25 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirModuleGetOperation",
       "mlirOperationStateGet",
       "mlirNamedAttributeGet",
+      "mlirIntegerAttrGet",
+      "mlirStringAttrGet",
+      "mlirArrayAttrGet",
+      "mlirTypeAttrGet",
+      ////////////////////
+      // Integer types
+      ////////////////////
+      "mlirIntegerTypeGet",
+      ////////////////////
       "mlirIdentifierGet",
       // "mlirAttributeParseGet", // We should not "parse" anything
+      "mlirOperationStateAddOperands",
+      "mlirOperationStateAddResults",
       "mlirOperationStateAddAttributes",
+      "mlirOperationGetResult",
       "mlirRegionCreate",
       "mlirOperationCreate",
       "mlirBlockCreate",
+      "mlirBlockGetArgument",
       "mlirBlockAppendOwnedOperation",
       "mlirRegionAppendOwnedBlock",
       "mlirOperationStateAddOwnedRegions",
@@ -170,6 +183,8 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "MlirContext",
       "MlirDialectHandle",
       "MlirStringRef",
+      "MlirType",
+      "MlirValue",
       "MlirLocation",
       "MlirAttribute",
       "MlirModule",
