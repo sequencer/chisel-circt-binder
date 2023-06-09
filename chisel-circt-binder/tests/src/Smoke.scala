@@ -60,22 +60,25 @@ object Smoke extends TestSuite {
     attach(a4.s1)
     attach(a4.s2)
 
-    val width: Int = 32
-    val io = IO(new Bundle {
-      val enable = Input(Bool())
-      val write = Input(Bool())
-      val addr = Input(UInt(10.W))
-      val dataIn = Input(UInt(width.W))
-      val dataOut = Output(UInt(width.W))
-    })
+    val wireTest = Wire(UInt(8.W))
+    in <> wireTest
 
-    val mem = SyncReadMem(1024, UInt(width.W))
-    io.dataOut := mem.read(io.dataOut, io.enable && !io.write)
-    when(io.enable) {
-      when(io.write) {
-        mem.write(io.addr, io.dataIn)
-      }
-    }
+    // val width: Int = 32
+    // val io = IO(new Bundle {
+    //   val enable = Input(Bool())
+    //   val write = Input(Bool())
+    //   val addr = Input(UInt(10.W))
+    //   val dataIn = Input(UInt(width.W))
+    //   val dataOut = Output(UInt(width.W))
+    // })
+//
+    // val mem = SyncReadMem(1024, UInt(width.W))
+    // io.dataOut := mem.read(io.dataOut, io.enable && !io.write)
+    // when(io.enable) {
+    //   when(io.write) {
+    //     mem.write(io.addr, io.dataIn)
+    //   }
+    // }
   }
 
   val tests = Tests {
