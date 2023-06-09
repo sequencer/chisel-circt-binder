@@ -290,8 +290,8 @@ private[chisel3] object converter {
     }
 
     abstract class Reference {}
-    case class Port(index: Int) extends Reference
-    case class Wire(ref: MemorySegment) extends Reference
+    case class Port(index: Int, tpe: fir.Type) extends Reference
+    case class Wire(ref: MemorySegment, tpe: fir.Type) extends Reference
     case class SubField(index: Int, tpe: fir.Type) extends Reference
     case class SubIndex(index: Int, tpe: fir.Type) extends Reference
 
@@ -301,13 +301,15 @@ private[chisel3] object converter {
         Port(
           enclosure
             .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
-            .indexWhere(_._2 == data)
+            .indexWhere(_._2 == data),
+          Converter.extractType(data, null)
         )
       case PortBinding(enclosure) =>
         Port(
           enclosure
             .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
-            .indexWhere(_._2 == data)
+            .indexWhere(_._2 == data),
+          Converter.extractType(data, null)
         )
       case _ => throw new Exception("got non-port data")
     }.getOrElse(throw new Exception("got unbound data"))
@@ -319,7 +321,7 @@ private[chisel3] object converter {
         case Some((_, value)) => value
         case None             => throw new Exception("wire not found")
       }
-      Wire(value)
+      Wire(value, Converter.extractType(data, null))
     }
 
     // got data index for Vec or Record
@@ -362,7 +364,9 @@ private[chisel3] object converter {
       Seq()
     }
 
-    private[converter] def createReference(id: chisel3.internal.HasId): MemorySegment /* MlirValue */ = {
+    private[converter] def createReferenceWithType(
+      id: chisel3.internal.HasId
+    ): (MemorySegment /* MlirValue */, fir.Type) = {
       val idFieldIndex = mlirIdentifierGet(arena, ctx, createMlirStr("fieldIndex"))
       val idIndex = mlirIdentifierGet(arena, ctx, createMlirStr("index"))
       val indexType = mlirIntegerTypeGet(arena, ctx, 32)
@@ -370,33 +374,43 @@ private[chisel3] object converter {
       val refChain = reference(id, Seq())
 
       // After reverse, `Port` or `wire` should be the first element in the chain, so the initialization value of the `foldLeft` is unnecessary
-      refChain.reverse.foldLeft(NULL) {
-        case (parent: MemorySegment /* MlirValue */, index: Reference) => {
-          index match {
-            case Port(index) =>
-              mlirBlockGetArgument(arena, firModule.block, index)
-            case Wire(value) => value
-            case SubField(index, tpe) =>
-              buildOp(
-                Some(firModule.block),
-                "firrtl.subfield",
-                Seq(mlirNamedAttributeGet(arena, idFieldIndex, mlirIntegerAttrGet(arena, indexType, index))),
-                Seq(parent),
-                Seq(createMlirType(tpe)),
-                unkLoc
-              ).results(0)
-            case SubIndex(index, tpe) =>
-              buildOp(
-                Some(firModule.block),
-                "firrtl.subindex",
-                Seq(mlirNamedAttributeGet(arena, idIndex, mlirIntegerAttrGet(arena, indexType, index))),
-                Seq(parent),
-                Seq(createMlirType(tpe)),
-                unkLoc
-              ).results(0)
+      refChain.reverse.foldLeft[(MemorySegment, fir.Type)]((NULL, null)) {
+        case ((parent: MemorySegment /* MlirValue */, parent_tpe), ref: Reference) => {
+          ref match {
+            case Port(ref, tpe) =>
+              (mlirBlockGetArgument(arena, firModule.block, ref), tpe)
+            case Wire(value, tpe) => (value, tpe)
+            case SubField(ref, tpe) =>
+              (
+                buildOp(
+                  Some(firModule.block),
+                  "firrtl.subfield",
+                  Seq(mlirNamedAttributeGet(arena, idFieldIndex, mlirIntegerAttrGet(arena, indexType, ref))),
+                  Seq(parent),
+                  Seq(createMlirType(tpe)),
+                  unkLoc
+                ).results(0),
+                tpe
+              )
+            case SubIndex(ref, tpe) =>
+              (
+                buildOp(
+                  Some(firModule.block),
+                  "firrtl.subindex",
+                  Seq(mlirNamedAttributeGet(arena, idIndex, mlirIntegerAttrGet(arena, indexType, ref))),
+                  Seq(parent),
+                  Seq(createMlirType(tpe)),
+                  unkLoc
+                ).results(0),
+                tpe
+              )
           }
         }
       }
+    }
+
+    private[converter] def createReference(id: chisel3.internal.HasId): MemorySegment /* MlirValue */ = {
+      createReferenceWithType(id)._1
     }
 
     private[converter] def dump(): Unit = {
@@ -596,7 +610,37 @@ private[chisel3] object converter {
       )
       wires += ((wireName, op.results(0)))
     }
+
+    private[converter] def visitDefInvalid(defInvalid: DefInvalid): Unit = {
+      val id = defInvalid.arg match {
+        case Node(id) => id
+        case _        => throw new Exception("unhandled arg type in invalid op")
+      }
+      val (dest, destType) = createReferenceWithType(id)
+
+      val invalidValue = buildOp(
+        Some(firModule.block),
+        "firrtl.invalidvalue",
+        Seq.empty,
+        Seq.empty,
+        Seq(createMlirType(destType)),
+        unkLoc
+      ).results(0)
+
+      buildOp(
+        Some(firModule.block),
+        "firrtl.connect",
+        Seq.empty,
+        Seq(
+          /* dest */ dest,
+          /* src */ invalidValue
+        ),
+        Seq.empty,
+        unkLoc
+      )
+    }
   }
+
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
     ctx.visitCircuit(circuit.name)
     circuit.components.foreach {
@@ -685,14 +729,14 @@ private[chisel3] object converter {
   )(
     implicit ctx: ConverterContext
   ): Unit = {
-    // TODO: Call C-API here
+    // Not used anywhere
   }
   def visitDefInvalid(
     defInvalid: DefInvalid
   )(
     implicit ctx: ConverterContext
   ): Unit = {
-    // TODO: Call C-API here
+    ctx.visitDefInvalid(defInvalid)
   }
   def visitOtherwiseEnd(
     otherwiseEnd: OtherwiseEnd

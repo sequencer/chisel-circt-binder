@@ -61,7 +61,9 @@ object Smoke extends TestSuite {
     attach(a4.s2)
 
     val wireTest = Wire(UInt(8.W))
+    val wireInvalid = Wire(UInt(8.W))
     in <> wireTest
+    wireInvalid := DontCare
 
     // val width: Int = 32
     // val io = IO(new Bundle {
