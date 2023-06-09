@@ -74,7 +74,8 @@ object Smoke extends TestSuite {
       val dataOut = Output(UInt(width.W))
     })
 
-    val mem = SyncReadMem(1024, UInt(32.W))
+    val syncReadMem = SyncReadMem(1024, UInt(32.W))
+    val mem = Mem(1024, UInt(32.W))
     //io.dataOut := mem.read(io.dataOut, io.enable && !io.write)
     //when(io.enable) {
     //  when(io.write) {

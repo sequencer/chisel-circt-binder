@@ -693,6 +693,42 @@ private[chisel3] object converter {
         unkLoc
       )
     }
+
+    private[converter] def visitDefMemory(defMemory: DefMemory): Unit = {
+      val op = buildOp(
+        Some(firModule.block),
+        "chirrtl.combmem",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(defMemory.id, defMemory.sourceInfo).name)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
+            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            emptyArrayAttr
+          )
+          // attr: inner_sym
+          // init
+        ),
+        Seq.empty,
+        Seq(
+          /* result */ chirrtlGetTypeCMemory(
+            arena,
+            ctx,
+            createMlirType(Converter.extractType(defMemory.t, defMemory.sourceInfo)),
+            defMemory.size.longValue
+          )
+        ),
+        unkLoc
+      )
+    }
   }
 
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -796,7 +832,7 @@ private[chisel3] object converter {
     println(s"defMemPort: $defMemPort")
   }
   def visitDefMemory(defMemory: DefMemory)(implicit ctx: ConverterContext): Unit = {
-    //ctx.visitDefMemory(defMemory)
+    ctx.visitDefMemory(defMemory)
   }
   def visitDefPrim(defPrim: DefPrim[_])(implicit ctx: ConverterContext): Unit = {
     println(s"defPrim: $defPrim")
