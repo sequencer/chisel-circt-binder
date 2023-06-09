@@ -66,7 +66,7 @@ private[chisel3] object converter {
     mlirDialectHandleLoadDialect(arena, firrtlDialect, ctx)
 
     val unkLoc = mlirLocationUnknownGet(arena, ctx)
-    val emptyArrayAttr = firrtlGetAttrArray(arena, ctx, NULL, 0)
+    val emptyArrayAttr = mlirArrayAttrGet(arena, ctx, 0, NULL)
 
     val module = mlirModuleCreateEmpty(arena, unkLoc)
     val moduleBody = mlirModuleGetBody(arena, module)
@@ -88,7 +88,7 @@ private[chisel3] object converter {
     }
 
     private[converter] def createStrAttr(str: String): MemorySegment /* MlirAttribute */ = {
-      firrtlGetAttrString(arena, ctx, createMlirStr(str))
+      mlirStringAttrGet(arena, ctx, createMlirStr(str))
     }
 
     private[converter] def createMlirType(firType: fir.Type): MemorySegment /* MlirAttribute */ = {
@@ -307,6 +307,12 @@ private[chisel3] object converter {
             .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
             .indexWhere(_._2 == data)
         )
+      case WireBinding(enclosure, visibility) =>
+        val a = enclosure
+          .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
+          .indexWhere(_._2 == data)
+        println(s"aaa = $a")
+        Port(a)
       case _ => throw new Exception("got non-port data")
     }.getOrElse(throw new Exception("got unbound data"))
 
@@ -342,6 +348,7 @@ private[chisel3] object converter {
             case SampleElementBinding(parent)             => return referenceIndex(parent, indexes :+ elementIndex(data))
             case MemoryPortBinding(enclosure, visibility) => // TODO
             case MemTypeBinding(parent)                   => // TODO
+            case WireBinding(enclosure, visibility)       => return referenceIndex(enclosure, indexes :+ portIndex(data))
             case _                                        => assert(false)
           }
         case base: MemBase[_] => // TODO
@@ -349,12 +356,12 @@ private[chisel3] object converter {
       Seq()
     }
 
-    private[converter] def createReference(node: Node): MemorySegment /* MlirValue */ = {
+    private[converter] def createReference(id: chisel3.internal.HasId): MemorySegment /* MlirValue */ = {
       val idFieldIndex = mlirIdentifierGet(arena, ctx, createMlirStr("fieldIndex"))
       val idIndex = mlirIdentifierGet(arena, ctx, createMlirStr("index"))
       val indexType = mlirIntegerTypeGet(arena, ctx, 32)
 
-      val indexChain = referenceIndex(node.id, Seq())
+      val indexChain = referenceIndex(id, Seq())
 
       // After reverse, `Port` should be the first element in the chain, so the initialization value of the `foldLeft` is unnecessary
       indexChain.reverse.foldLeft(NULL) {
@@ -453,7 +460,7 @@ private[chisel3] object converter {
 
           directionsAttr.setAtIndex(C_INT, i, direction)
           fillAttr(namesAttr, i, createStrAttr(firPort.name))
-          fillAttr(typesAttr, i, firrtlGetAttrType(arena, mlirType))
+          fillAttr(typesAttr, i, mlirTypeAttrGet(arena, mlirType))
           fillAttr(annotationsAttr, i, emptyArrayAttr)
           // TODO: syms
           fillAttr(locsAttr, i, unkLoc)
@@ -484,17 +491,17 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("portNames")),
-            firrtlGetAttrArray(arena, ctx, namesAttr, portsLength)
+            mlirArrayAttrGet(arena, ctx, portsLength, namesAttr)
           ),
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("portTypes")),
-            firrtlGetAttrArray(arena, ctx, typesAttr, portsLength)
+            mlirArrayAttrGet(arena, ctx, portsLength, typesAttr)
           ),
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("portAnnotations")),
-            firrtlGetAttrArray(arena, ctx, annotationsAttr, portsLength)
+            mlirArrayAttrGet(arena, ctx, portsLength, annotationsAttr)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -504,7 +511,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("portLocations")),
-            firrtlGetAttrArray(arena, ctx, locsAttr, portsLength)
+            mlirArrayAttrGet(arena, ctx, portsLength, locsAttr)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -524,8 +531,57 @@ private[chisel3] object converter {
         Some(firModule.block),
         "firrtl.attach",
         Seq.empty,
-        attach.locs.map(createReference),
+        attach.locs.map(loc => createReference(loc.id)),
         Seq.empty,
+        unkLoc
+      )
+    }
+
+    private[converter] def visitConnect(connect: Connect): Unit = {
+      buildOp(
+        Some(firModule.block),
+        "firrtl.connect",
+        Seq.empty,
+        Seq(
+          /* dest */ createReference(connect.loc.id),
+          /* src */ createReference(connect.exp match {
+            case Node(id) => id
+            case _        => throw new Exception("unhandled exp type in connect op")
+          })
+        ),
+        Seq.empty,
+        unkLoc
+      )
+    }
+
+    private[converter] def visitDefWire(defWire: DefWire): Unit = {
+      buildOp(
+        Some(firModule.block),
+        "firrtl.wire",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(defWire.id, defWire.sourceInfo).name)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
+            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            emptyArrayAttr
+          )
+          // attr: inner_sym
+          // attr: forceable
+        ),
+        Seq.empty,
+        Seq(
+          /* result */ createMlirType(Converter.extractType(defWire.id, defWire.sourceInfo))
+          /* ref */
+        ),
         unkLoc
       )
     }
@@ -611,7 +667,7 @@ private[chisel3] object converter {
     ctx.visitAttach(attach)
   }
   def visitConnect(connect: Connect)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API Here
+    ctx.visitConnect(connect)
   }
   def visitConnectInit(
     connectInit: ConnectInit
@@ -690,7 +746,7 @@ private[chisel3] object converter {
     // TODO: Call C-API here
   }
   def visitDefWire(defWire: DefWire)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
+    ctx.visitDefWire(defWire)
   }
   def visitPrintf(printf: Printf)(implicit ctx: ConverterContext): Unit = {
     // TODO: Call C-API here

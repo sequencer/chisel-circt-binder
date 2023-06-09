@@ -131,6 +131,8 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirStringAttrGet",
       "mlirArrayAttrGet",
       "mlirTypeAttrGet",
+      "mlirArrayAttrGet",
+      "mlirUnitAttrGet",
       ////////////////////
       // Integer types
       ////////////////////
@@ -163,10 +165,8 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "firrtlGetTypeBundle",
       //
       // FIRRTL Attribute
-      "firrtlGetAttrType",
-      "firrtlGetAttrArray",
-      "firrtlGetAttrString",
-      "firrtlGetAttrPortDirections"
+      "firrtlGetAttrPortDirections",
+      "firrtlGetAttrNameKind"
     )
   }
 
@@ -174,7 +174,10 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
     Seq(
       // enum FIRRTLPortDirection
       "FIRRTL_PORT_DIRECTION_INPUT",
-      "FIRRTL_PORT_DIRECTION_OUTPUT"
+      "FIRRTL_PORT_DIRECTION_OUTPUT",
+      // enum FIRRTLNameKind
+      "FIRRTL_NAME_KIND_DROPPABLE_NAME",
+      "FIRRTL_NAME_KIND_INTERESTING_NAME"
     )
   }
 
