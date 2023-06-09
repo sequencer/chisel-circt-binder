@@ -117,6 +117,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirContextCreate",
       "mlirContextDestroy",
       "mlirGetDialectHandle__firrtl__",
+      "mlirGetDialectHandle__chirrtl__",
       "mlirDialectHandleLoadDialect",
       // "mlirStringRefCreate", // inline function cannot be generated
       "mlirStringRefCreateFromCString",
@@ -166,7 +167,13 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       //
       // FIRRTL Attribute
       "firrtlGetAttrPortDirections",
-      "firrtlGetAttrNameKind"
+      "firrtlGetAttrNameKind",
+      "firrtlGetAttrRUW",
+      "firrtlGetAttrMemoryInit",
+      //
+      // CHIRRTL Attribute
+      "chirrtlGetTypeCMemory",
+      "chirrtlGetTypeCMemoryPort"
     )
   }
 
@@ -177,7 +184,11 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "FIRRTL_PORT_DIRECTION_OUTPUT",
       // enum FIRRTLNameKind
       "FIRRTL_NAME_KIND_DROPPABLE_NAME",
-      "FIRRTL_NAME_KIND_INTERESTING_NAME"
+      "FIRRTL_NAME_KIND_INTERESTING_NAME",
+      // enum FIRRTLRUW
+      "FIRRTL_RUW_UNDEFINED",
+      "FIRRTL_RUW_OLD",
+      "FIRRTL_RUW_NEW"
     )
   }
 
@@ -226,6 +237,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
         "-t", "org.llvm.circt",
         "-l", "MLIRCAPIIR",
         "-l", "CIRCTCAPIFIRRTL",
+        "-l", "CIRCTCAPICHIRRTL",
         "-l", "CIRCTCAPIExportFIRRTL",
         "-l", "CIRCTCAPIExportVerilog",
         "-l", "CIRCTFIRRTL",

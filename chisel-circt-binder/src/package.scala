@@ -63,7 +63,9 @@ private[chisel3] object converter {
 
     val ctx = mlirContextCreate(arena)
     val firrtlDialect = mlirGetDialectHandle__firrtl__(arena)
+    val chirrtlDialect = mlirGetDialectHandle__chirrtl__(arena)
     mlirDialectHandleLoadDialect(arena, firrtlDialect, ctx)
+    mlirDialectHandleLoadDialect(arena, chirrtlDialect, ctx)
 
     val unkLoc = mlirLocationUnknownGet(arena, ctx)
     val emptyArrayAttr = mlirArrayAttrGet(arena, ctx, 0, NULL)
@@ -380,24 +382,24 @@ private[chisel3] object converter {
             case Port(ref, tpe) =>
               (mlirBlockGetArgument(arena, firModule.block, ref), tpe)
             case Wire(value, tpe) => (value, tpe)
-            case SubField(ref, tpe) =>
+            case SubField(index, tpe) =>
               (
                 buildOp(
                   Some(firModule.block),
                   "firrtl.subfield",
-                  Seq(mlirNamedAttributeGet(arena, idFieldIndex, mlirIntegerAttrGet(arena, indexType, ref))),
+                  Seq(mlirNamedAttributeGet(arena, idFieldIndex, mlirIntegerAttrGet(arena, indexType, index))),
                   Seq(parent),
                   Seq(createMlirType(tpe)),
                   unkLoc
                 ).results(0),
                 tpe
               )
-            case SubIndex(ref, tpe) =>
+            case SubIndex(index, tpe) =>
               (
                 buildOp(
                   Some(firModule.block),
                   "firrtl.subindex",
-                  Seq(mlirNamedAttributeGet(arena, idIndex, mlirIntegerAttrGet(arena, indexType, ref))),
+                  Seq(mlirNamedAttributeGet(arena, idIndex, mlirIntegerAttrGet(arena, indexType, index))),
                   Seq(parent),
                   Seq(createMlirType(tpe)),
                   unkLoc
@@ -639,6 +641,58 @@ private[chisel3] object converter {
         unkLoc
       )
     }
+
+    private[converter] def visitDefSeqMemory(defSeqMemory: DefSeqMemory): Unit = {
+      val typeInt32 = mlirIntegerTypeGet(arena, ctx, 32)
+      val typeInt64 = mlirIntegerTypeGet(arena, ctx, 64)
+
+      val op = buildOp(
+        Some(firModule.block),
+        "chirrtl.seqmem",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("ruw")),
+            firrtlGetAttrRUW(
+              arena,
+              ctx,
+              defSeqMemory.readUnderWrite match {
+                case fir.ReadUnderWrite.Undefined => FIRRTL_RUW_UNDEFINED
+                case fir.ReadUnderWrite.Old       => FIRRTL_RUW_OLD
+                case fir.ReadUnderWrite.New       => FIRRTL_RUW_NEW
+              }
+            )
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(defSeqMemory.id, defSeqMemory.sourceInfo).name)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
+            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            emptyArrayAttr
+          )
+          // attr: inner_sym
+          // init
+        ),
+        Seq.empty,
+        Seq(
+          /* result */ chirrtlGetTypeCMemory(
+            arena,
+            ctx,
+            createMlirType(Converter.extractType(defSeqMemory.t, defSeqMemory.sourceInfo)),
+            defSeqMemory.size.longValue
+          )
+        ),
+        unkLoc
+      )
+    }
   }
 
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -711,12 +765,8 @@ private[chisel3] object converter {
         visitVerfiStop(stop)
     }
   }
-  def visitAltBegin(
-    altBegin: AltBegin
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API Here
+  def visitAltBegin(altBegin: AltBegin)(implicit ctx: ConverterContext): Unit = {
+    println(s"altBegin: $altBegin")
   }
   def visitAttach(attach: Attach)(implicit ctx: ConverterContext): Unit = {
     ctx.visitAttach(attach)
@@ -724,104 +774,64 @@ private[chisel3] object converter {
   def visitConnect(connect: Connect)(implicit ctx: ConverterContext): Unit = {
     ctx.visitConnect(connect)
   }
-  def visitConnectInit(
-    connectInit: ConnectInit
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
+  def visitConnectInit(connectInit: ConnectInit)(implicit ctx: ConverterContext): Unit = {
     // Not used anywhere
   }
-  def visitDefInvalid(
-    defInvalid: DefInvalid
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
+  def visitDefInvalid(defInvalid: DefInvalid)(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefInvalid(defInvalid)
   }
-  def visitOtherwiseEnd(
-    otherwiseEnd: OtherwiseEnd
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd)(implicit ctx: ConverterContext): Unit = {
+    println(s"otherwiseEnd: $otherwiseEnd")
   }
-  def visitWhenBegin(
-    whenBegin: WhenBegin
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitWhenBegin(whenBegin: WhenBegin)(implicit ctx: ConverterContext): Unit = {
+    println(s"whenBegin: $whenBegin")
   }
   def visitWhenEnd(whenEnd: WhenEnd)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
+    println(s"whenEnd: $whenEnd")
   }
-  def visitDefInstance(
-    defInstance: DefInstance
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API Here
+  def visitDefInstance(defInstance: DefInstance)(implicit ctx: ConverterContext): Unit = {
+    // TODO: unimplemented
   }
-  def visitDefMemPort(
-    defMemPort: DefMemPort[_]
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitDefMemPort(defMemPort: DefMemPort[_])(implicit ctx: ConverterContext): Unit = {
+    println(s"defMemPort: $defMemPort")
   }
-  def visitDefMemory(
-    defMemory: DefMemory
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitDefMemory(defMemory: DefMemory)(implicit ctx: ConverterContext): Unit = {
+    //ctx.visitDefMemory(defMemory)
   }
-  def visitDefPrim(
-    defPrim: DefPrim[_]
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitDefPrim(defPrim: DefPrim[_])(implicit ctx: ConverterContext): Unit = {
+    println(s"defPrim: $defPrim")
   }
   def visitDefReg(defReg: DefReg)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
+    println(s"defReg: $defReg")
   }
-  def visitDefRegInit(
-    defRegInit: DefRegInit
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitDefRegInit(defRegInit: DefRegInit)(implicit ctx: ConverterContext): Unit = {
+    println(s"defRegInit: $defRegInit")
   }
-  def visitDefSeqMemory(
-    defSeqMemory: DefSeqMemory
-  )(
-    implicit ctx: ConverterContext
-  ): Unit = {
-    // TODO: Call C-API here
+  def visitDefSeqMemory(defSeqMemory: DefSeqMemory)(implicit ctx: ConverterContext): Unit = {
+    ctx.visitDefSeqMemory(defSeqMemory)
   }
   def visitDefWire(defWire: DefWire)(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefWire(defWire)
   }
   def visitPrintf(printf: Printf)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
+    println(s"printf: $printf")
   }
   def visitStop(stop: Stop)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API here
+    println(s"stop: $stop")
   }
   def visitVerfiAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
-    // TODO: Call C-API here
+    println(s"assert: $assert")
   }
   def visitVerfiAssume(assume: Verification[chisel3.assume.Assume]): Unit = {
-    // TODO: Call C-API here
+    println(s"assume: $assume")
   }
   def visitVerfiCover(cover: Verification[chisel3.cover.Cover]): Unit = {
-    // TODO: Call C-API here
+    println(s"cover: $cover")
   }
   def visitVerfiPrintf(printf: Verification[chisel3.printf.Printf]): Unit = {
-    // TODO: Call C-API here
+    println(s"printf: $printf")
   }
   def visitVerfiStop(stop: Verification[chisel3.stop.Stop]): Unit = {
-    // TODO: Call C-API here
+    println(s"stop: $stop")
   }
 }
