@@ -35,7 +35,7 @@ object circt extends Module {
       "-B", T.dest,
       "-G", "Ninja",
       s"-DCMAKE_INSTALL_PREFIX=${installDirectory()}",
-      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_BUILD_TYPE=Debug",
       "-DLLVM_ENABLE_PROJECTS=mlir",
       "-DLLVM_TARGETS_TO_BUILD=X86",
       "-DLLVM_ENABLE_ASSERTIONS=ON",
@@ -138,6 +138,8 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       // Integer types
       ////////////////////
       "mlirIntegerTypeGet",
+      "mlirIntegerTypeUnsignedGet",
+      "mlirIntegerTypeSignedGet",
       ////////////////////
       "mlirIdentifierGet",
       // "mlirAttributeParseGet", // We should not "parse" anything

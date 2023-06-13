@@ -76,6 +76,7 @@ object Smoke extends TestSuite {
 
     val syncReadMem = SyncReadMem(1024, UInt(32.W))
     val mem = Mem(1024, UInt(32.W))
+    wireTest := !io.write
     //io.dataOut := mem.read(io.dataOut, io.enable && !io.write)
     //when(io.enable) {
     //  when(io.write) {
@@ -98,7 +99,11 @@ object Smoke extends TestSuite {
       ) { case (annos, phase) => phase.transform(annos) }
     }
 
-    test("cigarette") {
+    test("all (circt)") {
+      println(_root_.circt.stage.ChiselStage.emitCHIRRTL(new PortTestModule))
+    }
+
+    test("all (binder)") {
       Seq(
         new chisel3.stage.phases.Elaborate,
         chisel3.circt.Convert
