@@ -77,15 +77,7 @@ private[chisel3] object converter {
     val nodes = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val smem = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val cmem = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
-    // TODO: `access` op?
-    val mport = ArrayBuffer
-      .empty[
-        (
-          Long,
-          MemorySegment /* MlirValue */,
-          Option[(MemorySegment /* port: MlirValue */, Arg /* index */, Arg /* clock */ )]
-        )
-      ]
+    val mport = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
 
     var circuit:   OpWithBody = null
     var firModule: OpWithBody = null
@@ -420,19 +412,11 @@ private[chisel3] object converter {
     }
 
     def mportRef(data: Data): Reference = {
-      val index = mport.indexWhere {
-        case (id, _, _) => id == data._id
-      }
-      if (index == -1) {
-        throw new Exception("mport not found")
-      }
-
-      val (id, value, enable) = mport(index)
-      enable match {
-        case Some(enable) =>
-          enableMPort(enable._1, enable._2, enable._3)
-          mport(index) = (id, value, None)
-        case None =>
+      val value = mport.find {
+        case (id, _) => id == data._id
+      } match {
+        case Some((_, value)) => value
+        case None             => throw new Exception("mport not found")
       }
       MPort(value, Converter.extractType(data, null))
     }
@@ -582,21 +566,6 @@ private[chisel3] object converter {
         unkLoc
       )
       nodes += ((id, op.results(0)))
-    }
-
-    private[converter] def enableMPort(port: MemorySegment /* MlirValue */, index: Arg, clock: Arg): Unit = {
-      buildOp(
-        parentBlock(),
-        "chirrtl.memoryport.access",
-        Seq.empty,
-        Seq(
-          /* port */ port,
-          /* index */ createReferenceWithTypeFromArg(index)._1,
-          /* clock */ createReferenceWithTypeFromArg(clock)._1
-        ),
-        Seq.empty,
-        unkLoc
-      )
     }
 
     private[converter] def dump(): Unit = {
@@ -956,7 +925,20 @@ private[chisel3] object converter {
         ),
         unkLoc
       )
-      mport += ((defMemPort.id._id, op.results(0), Some((op.results(1), defMemPort.index, defMemPort.clock))))
+
+      buildOp(
+        parentBlock(),
+        "chirrtl.memoryport.access",
+        Seq.empty,
+        Seq(
+          /* port */ op.results(1),
+          /* index */ createReferenceWithTypeFromArg(defMemPort.index)._1,
+          /* clock */ createReferenceWithTypeFromArg(defMemPort.clock)._1
+        ),
+        Seq.empty,
+        unkLoc
+      )
+      mport += ((defMemPort.id._id, op.results(0)))
     }
 
     private[converter] def visitDefMemory(defMemory: DefMemory): Unit = {
