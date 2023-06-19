@@ -77,12 +77,12 @@ object Smoke extends TestSuite {
     val syncReadMem = SyncReadMem(1024, UInt(32.W))
     val mem = Mem(1024, UInt(32.W))
     wireTest := !io.write
-    //io.dataOut := mem.read(io.dataOut, io.enable && !io.write)
-    //when(io.enable) {
-    //  when(io.write) {
-    //    mem.write(io.addr, io.dataIn)
-    //  }
-    //}
+    io.dataOut := syncReadMem.read(io.dataOut, io.enable && !io.write)
+    when(io.enable) {
+      when(io.write) {
+        mem.write(io.addr, io.dataIn)
+      }
+    }
   }
 
   val tests = Tests {

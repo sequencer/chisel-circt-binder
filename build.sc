@@ -172,6 +172,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "firrtlGetAttrNameKind",
       "firrtlGetAttrRUW",
       "firrtlGetAttrMemoryInit",
+      "firrtlGetAttrMemDir",
       //
       // CHIRRTL Attribute
       "chirrtlGetTypeCMemory",
@@ -190,7 +191,12 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       // enum FIRRTLRUW
       "FIRRTL_RUW_UNDEFINED",
       "FIRRTL_RUW_OLD",
-      "FIRRTL_RUW_NEW"
+      "FIRRTL_RUW_NEW",
+      // enum FIRRTLMemDir
+      "FIRRTL_MEM_DIR_INFER",
+      "FIRRTL_MEM_DIR_READ",
+      "FIRRTL_MEM_DIR_WRITE",
+      "FIRRTL_MEM_DIR_READ_WRITE"
     )
   }
 
