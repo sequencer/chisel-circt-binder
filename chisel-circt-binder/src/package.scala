@@ -1154,11 +1154,11 @@ private[chisel3] object converter {
             mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
             emptyArrayAttr
           )
-          // attr: inner_sym
+          // inner_sym
           // forceable
         ),
         Seq(
-          /* clock */ createReferenceWithTypeFromArg(defReg.clock)._1
+          /* clockVal */ createReferenceWithTypeFromArg(defReg.clock)._1
         ),
         Seq(
           /* result */ createMlirType(Converter.extractType(defReg.id, defReg.sourceInfo))
@@ -1167,6 +1167,43 @@ private[chisel3] object converter {
         unkLoc
       )
       regs += ((defReg.id._id, op.results(0)))
+    }
+
+    private[converter] def visitDefRegInit(defRegInit: DefRegInit): Unit = {
+      val op = buildOp(
+        parentBlock(),
+        "firrtl.regreset",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(defRegInit.id, defRegInit.sourceInfo).name)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
+            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            emptyArrayAttr
+          )
+          // inner_sym
+          // forceable
+        ),
+        Seq(
+          /* clockVal */ createReferenceWithTypeFromArg(defRegInit.clock)._1,
+          /* reset */ createReferenceWithTypeFromArg(defRegInit.reset)._1,
+          /* init */ createReferenceWithTypeFromArg(defRegInit.init)._1
+        ),
+        Seq(
+          /* result */ createMlirType(Converter.extractType(defRegInit.id, defRegInit.sourceInfo))
+          /* ref */
+        ),
+        unkLoc
+      )
+      regs += ((defRegInit.id._id, op.results(0)))
     }
   }
 
@@ -1282,7 +1319,7 @@ private[chisel3] object converter {
     ctx.visitDefReg(defReg)
   }
   def visitDefRegInit(defRegInit: DefRegInit)(implicit ctx: ConverterContext): Unit = {
-    println(s"defRegInit: $defRegInit")
+    ctx.visitDefRegInit(defRegInit)
   }
   def visitDefSeqMemory(defSeqMemory: DefSeqMemory)(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefSeqMemory(defSeqMemory)

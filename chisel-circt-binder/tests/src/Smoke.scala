@@ -89,6 +89,8 @@ object Smoke extends TestSuite {
     regOfVec(1) := 456.U
     regOfVec(2) := 789.U
     regOfVec(3) := regOfVec(0)
+
+    val initRegOfVec = RegInit(VecInit(Seq.fill(4)(0.U(32.W))))
   }
 
   val tests = Tests {
