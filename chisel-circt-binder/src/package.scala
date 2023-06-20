@@ -78,6 +78,7 @@ private[chisel3] object converter {
     val smem = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val cmem = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val mport = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
+    val regs = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
 
     var circuit:   OpWithBody = null
     var firModule: OpWithBody = null
@@ -349,6 +350,7 @@ private[chisel3] object converter {
     case class SMem(ref: MemorySegment, tpe: fir.Type) extends Reference
     case class CMem(ref: MemorySegment, tpe: fir.Type) extends Reference
     case class MPort(ref: MemorySegment, tpe: fir.Type) extends Reference
+    case class Reg(ref: MemorySegment, tpe: fir.Type) extends Reference
     case class SubField(index: Int, tpe: fir.Type) extends Reference
     case class SubIndex(index: Int, tpe: fir.Type) extends Reference
 
@@ -421,6 +423,16 @@ private[chisel3] object converter {
       MPort(value, Converter.extractType(data, null))
     }
 
+    def regRef(data: Data): Reference = {
+      val value = regs.find {
+        case (id, _) => id == data._id
+      } match {
+        case Some((_, value)) => value
+        case None             => throw new Exception("reg not found")
+      }
+      Reg(value, Converter.extractType(data, null))
+    }
+
     // got data index for Vec or Record
     def elementIndex(data: Data): Reference = data.binding.map {
       case binding: ChildBinding =>
@@ -455,6 +467,7 @@ private[chisel3] object converter {
             // case MemTypeBinding(parent)                   =>
             case WireBinding(enclosure, visibility) => return reference(enclosure, refChain :+ wireRef(data))
             case OpBinding(enclosure, visibility)   => return reference(enclosure, refChain :+ nodeRef(data))
+            case RegBinding(enclosure, visibility)  => return reference(enclosure, refChain :+ regRef(data))
             case unhandled                          => throw new Exception(s"unhandled binding $unhandled")
           }
         case mem:  Mem[Data]         => return refChain :+ cmemRef(mem.t) // TODO: really no parent?
@@ -484,6 +497,7 @@ private[chisel3] object converter {
             case SMem(value, tpe)  => (value, tpe)
             case CMem(value, tpe)  => (value, tpe)
             case MPort(value, tpe) => (value, tpe)
+            case Reg(value, tpe)   => (value, tpe)
             case SubField(index, tpe) =>
               (
                 buildOp(
@@ -519,9 +533,26 @@ private[chisel3] object converter {
       arg match {
         case Node(id) => createReferenceWithType(id)
         case ULit(value, width) =>
-          val resultType = fir.UIntType(fir.IntWidth(width.get))
-          val valueType = mlirIntegerTypeUnsignedGet(arena, ctx, width.get)
-          (createConstantValue(resultType, valueType, value.toInt), resultType)
+          def bitLength(n: Long): Int = {
+            var bits = 0
+            var num = n
+            while (num != 0) {
+              bits += 1
+              num >>>= 1
+            }
+            bits
+          }
+
+          val constantValue = value.toInt
+          val (firWidth, valWidth) = width match {
+            case _: UnknownWidth =>
+              val bitLen = bitLength(constantValue)
+              (fir.IntWidth(bitLen), bitLen)
+            case w: KnownWidth => (fir.IntWidth(w.get), w.get)
+          }
+          val resultType = fir.UIntType(firWidth)
+          val valueType = mlirIntegerTypeUnsignedGet(arena, ctx, valWidth)
+          (createConstantValue(resultType, valueType, constantValue), resultType)
         case unhandled => throw new Exception(s"unhandled arg type to be reference: $unhandled")
       }
     }
@@ -731,10 +762,7 @@ private[chisel3] object converter {
         Seq.empty,
         Seq(
           /* dest */ createReference(connect.loc.id),
-          /* src */ createReference(connect.exp match {
-            case Node(id) => id
-            case _        => throw new Exception("unhandled exp type in connect op")
-          })
+          /* src */ createReferenceWithTypeFromArg(connect.exp)._1
         ),
         Seq.empty,
         unkLoc
@@ -1105,6 +1133,41 @@ private[chisel3] object converter {
       )
       createNode(defPrim.id._id, name, resultType, op.results(0))
     }
+
+    private[converter] def visitDefReg(defReg: DefReg): Unit = {
+      val op = buildOp(
+        parentBlock(),
+        "firrtl.reg",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(defReg.id, defReg.sourceInfo).name)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
+            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("annotations")),
+            emptyArrayAttr
+          )
+          // attr: inner_sym
+          // forceable
+        ),
+        Seq(
+          /* clock */ createReferenceWithTypeFromArg(defReg.clock)._1
+        ),
+        Seq(
+          /* result */ createMlirType(Converter.extractType(defReg.id, defReg.sourceInfo))
+          /* ref */
+        ),
+        unkLoc
+      )
+      regs += ((defReg.id._id, op.results(0)))
+    }
   }
 
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -1216,7 +1279,7 @@ private[chisel3] object converter {
     ctx.visitDefPrim(defPrim)
   }
   def visitDefReg(defReg: DefReg)(implicit ctx: ConverterContext): Unit = {
-    println(s"defReg: $defReg")
+    ctx.visitDefReg(defReg)
   }
   def visitDefRegInit(defRegInit: DefRegInit)(implicit ctx: ConverterContext): Unit = {
     println(s"defRegInit: $defRegInit")

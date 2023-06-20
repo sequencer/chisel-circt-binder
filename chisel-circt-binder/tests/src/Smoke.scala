@@ -83,6 +83,12 @@ object Smoke extends TestSuite {
         mem.write(io.addr, io.dataIn)
       }
     }
+
+    val regOfVec = Reg(Vec(4, UInt(32.W))) // Register of 32-bit UInts
+    regOfVec(0) := 123.U // Assignments to elements of the Vec
+    regOfVec(1) := 456.U
+    regOfVec(2) := 789.U
+    regOfVec(3) := regOfVec(0)
   }
 
   val tests = Tests {
