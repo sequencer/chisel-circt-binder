@@ -1205,6 +1205,32 @@ private[chisel3] object converter {
       )
       regs += ((defRegInit.id._id, op.results(0)))
     }
+
+    private[converter] def visitPrintf(parent: Component, printf: Printf): Unit = {
+      val (fmt, args) = Converter.unpack(printf.pable, parent)
+      buildOp(
+        parentBlock(),
+        "firrtl.printf",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("formatString")),
+            createStrAttr(fmt)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(printf.id, printf.sourceInfo).name)
+          )
+        ),
+        Seq(
+          /* clock */ createReferenceWithTypeFromArg(printf.clock)._1,
+          /* cond */ createConstantValue(fir.UIntType(fir.IntWidth(1)), mlirIntegerTypeUnsignedGet(arena, ctx, 1), 1)
+        ) ++ /* substitutions */ args.map(createReferenceWithTypeFromArg(_)._1),
+        Seq.empty,
+        unkLoc
+      )
+    }
   }
 
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -1262,7 +1288,7 @@ private[chisel3] object converter {
       case defWire: DefWire =>
         visitDefWire(defWire)
       case printf: Printf =>
-        visitPrintf(printf)
+        visitPrintf(defModule, printf)
       case stop: Stop =>
         visitStop(stop)
       case assert: Verification[chisel3.assert.Assert] =>
@@ -1327,8 +1353,8 @@ private[chisel3] object converter {
   def visitDefWire(defWire: DefWire)(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefWire(defWire)
   }
-  def visitPrintf(printf: Printf)(implicit ctx: ConverterContext): Unit = {
-    println(s"printf: $printf")
+  def visitPrintf(parent: Component, printf: Printf)(implicit ctx: ConverterContext): Unit = {
+    ctx.visitPrintf(parent, printf)
   }
   def visitStop(stop: Stop)(implicit ctx: ConverterContext): Unit = {
     println(s"stop: $stop")
