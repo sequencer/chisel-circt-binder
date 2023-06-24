@@ -94,6 +94,7 @@ object Smoke extends TestSuite {
 
     val printfIn = IO(Input(UInt(8.W)))
     printf(cf"in = $printfIn $printfIn\n")
+    stop("???a")
   }
 
   val tests = Tests {

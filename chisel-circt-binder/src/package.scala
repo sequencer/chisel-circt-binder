@@ -1231,6 +1231,31 @@ private[chisel3] object converter {
         unkLoc
       )
     }
+
+    private[converter] def visitStop(stop: Stop): Unit = {
+      buildOp(
+        parentBlock(),
+        "firrtl.stop",
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("exitCode")),
+            mlirIntegerAttrGet(arena, mlirIntegerTypeGet(arena, ctx, 32), stop.ret)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(stop.id, stop.sourceInfo).name)
+          )
+        ),
+        Seq(
+          /* clock */ createReferenceWithTypeFromArg(stop.clock)._1,
+          /* cond */ createConstantValue(fir.UIntType(fir.IntWidth(1)), mlirIntegerTypeUnsignedGet(arena, ctx, 1), 1)
+        ),
+        Seq.empty,
+        unkLoc
+      )
+    }
   }
 
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -1357,7 +1382,7 @@ private[chisel3] object converter {
     ctx.visitPrintf(parent, printf)
   }
   def visitStop(stop: Stop)(implicit ctx: ConverterContext): Unit = {
-    println(s"stop: $stop")
+    ctx.visitStop(stop)
   }
   def visitVerfiAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
     println(s"assert: $assert")
