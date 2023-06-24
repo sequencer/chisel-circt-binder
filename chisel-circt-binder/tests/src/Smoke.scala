@@ -95,6 +95,9 @@ object Smoke extends TestSuite {
     val printfIn = IO(Input(UInt(8.W)))
     printf(cf"in = $printfIn $printfIn\n")
     stop("???a")
+    chisel3.assert(false.B, "111")
+    assume(false.B)
+    cover(false.B, "zzz")
   }
 
   val tests = Tests {

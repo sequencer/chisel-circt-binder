@@ -33,7 +33,7 @@ import chisel3.internal.{
 import java.lang.foreign._
 import java.lang.foreign.MemorySegment.NULL
 import java.lang.foreign.ValueLayout._
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, Stack}
 import chisel3.internal.firrtl._
 import firrtl.ir.HasName
 import org.llvm.circt._
@@ -83,9 +83,8 @@ private[chisel3] object converter {
     var circuit:   OpWithBody = null
     var firModule: OpWithBody = null
 
-    // TODO: Support `when` with depth more than 1
     case class WhenContext(ctx: OpWithBody, var isElse: Boolean)
-    var whenCtx: Option[WhenContext] = None
+    var whenCtx: Stack[WhenContext] = Stack.empty
 
     private[converter] def createMlirStr(str: String): MemorySegment = {
       val strBytes = str.getBytes()
@@ -189,14 +188,15 @@ private[chisel3] object converter {
     }
 
     private[converter] def parentBlock(): MemorySegment /* MlirBlock */ = {
-      whenCtx match {
-        case Some(w) =>
-          if (!w.isElse) {
-            w.ctx.region(0).block(0)
-          } else {
-            w.ctx.region(1).block(0)
-          }
-        case None => firModule.region(0).block(0)
+      if (!whenCtx.isEmpty) {
+        val w = whenCtx.top
+        if (!w.isElse) {
+          w.ctx.region(0).block(0)
+        } else {
+          w.ctx.region(1).block(0)
+        }
+      } else {
+        firModule.region(0).block(0)
       }
     }
 
@@ -739,9 +739,7 @@ private[chisel3] object converter {
     }
 
     private[converter] def visitAltBegin(altBegin: AltBegin): Unit = {
-      whenCtx match {
-        case Some(w) => w.isElse = true
-      }
+      assert(false, "unimplemented")
     }
 
     private[converter] def visitAttach(attach: Attach): Unit = {
@@ -852,14 +850,14 @@ private[chisel3] object converter {
         unkLoc
       )
 
-      whenCtx = Some(WhenContext(op, false))
+      whenCtx.push(WhenContext(op, false))
     }
 
     private[converter] def visitWhenEnd(whenEnd: WhenEnd): Unit = {
       assert(whenEnd.firrtlDepth == 0)
       assert(whenEnd.hasAlt == false)
 
-      whenCtx = None
+      whenCtx.pop()
     }
 
     private[converter] def visitDefSeqMemory(defSeqMemory: DefSeqMemory): Unit = {
@@ -1256,6 +1254,52 @@ private[chisel3] object converter {
         unkLoc
       )
     }
+
+    private[converter] def visitVerification[T <: chisel3.VerificationStatement](
+      verifi: Verification[T],
+      opName: String,
+      args:   Seq[Arg]
+    ): Unit = {
+      buildOp(
+        parentBlock(),
+        opName,
+        Seq(
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("message")),
+            createStrAttr(verifi.message)
+          ),
+          mlirNamedAttributeGet(
+            arena,
+            mlirIdentifierGet(arena, ctx, createMlirStr("name")),
+            createStrAttr(Converter.getRef(verifi.id, verifi.sourceInfo).name)
+          )
+          /* isConcurrent */ // TODO
+          /* eventControl */ // TODO
+        ),
+        Seq(
+          /* clock */ createReferenceWithTypeFromArg(verifi.clock)._1,
+          /* predicate */ createReferenceWithTypeFromArg(verifi.predicate)._1,
+          /* enable */ createConstantValue(fir.UIntType(fir.IntWidth(1)), mlirIntegerTypeUnsignedGet(arena, ctx, 1), 1)
+        ) ++ /* substitutions */ args.map(createReferenceWithTypeFromArg(_)._1),
+        Seq.empty,
+        unkLoc
+      )
+    }
+
+    private[converter] def visitAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
+      visitVerification(assert, "firrtl.assert", Seq.empty)
+    }
+
+    private[converter] def visitAssume(assume: Verification[chisel3.assume.Assume]): Unit = {
+      // TODO: CIRCT emits `assert` for this, is it expected?
+      visitVerification(assume, "firrtl.assume", Seq.empty)
+    }
+
+    private[converter] def visitCover(cover: Verification[chisel3.cover.Cover]): Unit = {
+      // TODO: CIRCT emits `assert` for this, is it expected?
+      visitVerification(cover, "firrtl.cover", Seq.empty)
+    }
   }
 
   def visitCircuit(circuit: Circuit)(implicit ctx: ConverterContext): Unit = {
@@ -1384,19 +1428,19 @@ private[chisel3] object converter {
   def visitStop(stop: Stop)(implicit ctx: ConverterContext): Unit = {
     ctx.visitStop(stop)
   }
-  def visitVerfiAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
-    println(s"assert: $assert")
+  def visitVerfiAssert(assert: Verification[chisel3.assert.Assert])(implicit ctx: ConverterContext): Unit = {
+    ctx.visitAssert(assert)
   }
-  def visitVerfiAssume(assume: Verification[chisel3.assume.Assume]): Unit = {
-    println(s"assume: $assume")
+  def visitVerfiAssume(assume: Verification[chisel3.assume.Assume])(implicit ctx: ConverterContext): Unit = {
+    ctx.visitAssume(assume)
   }
-  def visitVerfiCover(cover: Verification[chisel3.cover.Cover]): Unit = {
-    println(s"cover: $cover")
+  def visitVerfiCover(cover: Verification[chisel3.cover.Cover])(implicit ctx: ConverterContext): Unit = {
+    ctx.visitCover(cover)
   }
-  def visitVerfiPrintf(printf: Verification[chisel3.printf.Printf]): Unit = {
-    println(s"printf: $printf")
+  def visitVerfiPrintf(printf: Verification[chisel3.printf.Printf])(implicit ctx: ConverterContext): Unit = {
+    // TODO: Not used anywhere?
   }
-  def visitVerfiStop(stop: Verification[chisel3.stop.Stop]): Unit = {
-    println(s"stop: $stop")
+  def visitVerfiStop(stop: Verification[chisel3.stop.Stop])(implicit ctx: ConverterContext): Unit = {
+    // TODO: Not used anywhere?
   }
 }
