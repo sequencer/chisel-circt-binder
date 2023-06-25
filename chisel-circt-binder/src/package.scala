@@ -34,6 +34,7 @@ import java.lang.foreign._
 import java.lang.foreign.MemorySegment.NULL
 import java.lang.foreign.ValueLayout._
 import scala.collection.mutable.{ArrayBuffer, Stack}
+import scala.math._
 import chisel3.internal.firrtl._
 import firrtl.ir.HasName
 import org.llvm.circt._
@@ -530,19 +531,19 @@ private[chisel3] object converter {
     private[converter] def createReferenceWithTypeFromArg(
       arg: Arg
     ): (MemorySegment /* MlirValue */, fir.Type) = {
+      def bitLength(n: Long): Int = {
+        var bits = 0
+        var num = n
+        while (num != 0) {
+          bits += 1
+          num >>>= 1
+        }
+        bits
+      }
+
       arg match {
         case Node(id) => createReferenceWithType(id)
         case ULit(value, width) =>
-          def bitLength(n: Long): Int = {
-            var bits = 0
-            var num = n
-            while (num != 0) {
-              bits += 1
-              num >>>= 1
-            }
-            bits
-          }
-
           val constantValue = value.toInt
           val (firWidth, valWidth) = width match {
             case _: UnknownWidth =>
@@ -552,6 +553,17 @@ private[chisel3] object converter {
           }
           val resultType = fir.UIntType(firWidth)
           val valueType = mlirIntegerTypeUnsignedGet(arena, ctx, valWidth)
+          (createConstantValue(resultType, valueType, constantValue), resultType)
+        case SLit(value, width) => // TODO: almost as the same with ULit, dedup me
+          val constantValue = value.toInt
+          val (firWidth, valWidth) = width match {
+            case _: UnknownWidth =>
+              val bitLen = bitLength(constantValue)
+              (fir.IntWidth(bitLen), bitLen)
+            case w: KnownWidth => (fir.IntWidth(w.get), w.get)
+          }
+          val resultType = fir.SIntType(firWidth)
+          val valueType = mlirIntegerTypeSignedGet(arena, ctx, valWidth)
           (createConstantValue(resultType, valueType, constantValue), resultType)
         case unhandled => throw new Exception(s"unhandled arg type to be reference: $unhandled")
       }
@@ -1008,14 +1020,10 @@ private[chisel3] object converter {
       def refArg(index: Int): (MemorySegment /* MlirValue */, fir.Type) = {
         createReferenceWithTypeFromArg(defPrim.args(index))
       }
-      def arg(index: Int): Arg = {
-        defPrim.args(index)
-      }
-
-      def signlessExtractLitFromArg(
-        arg: Arg
+      def signlessLitArg(
+        index: Int
       ): BigInt = {
-        arg match {
+        defPrim.args(index) match {
           case ILit(value)    => value
           case ULit(value, _) => value
           case unhandled      => throw new Exception(s"unhandled lit arg type to be extracted: $unhandled")
@@ -1024,36 +1032,210 @@ private[chisel3] object converter {
 
       val name = Converter.getRef(defPrim.id, defPrim.sourceInfo).name
 
-      val (opName, attrs, operands, resultType) = defPrim.op match {
-        // case PrimOp.AddOp =>
-        // case PrimOp.SubOp =>
-        // case PrimOp.TailOp =>
-        // case PrimOp.HeadOp =>
-        // case PrimOp.TimesOp =>
-        // case PrimOp.DivideOp =>
-        // case PrimOp.RemOp =>
-        // case PrimOp.ShiftLeftOp =>
-        // case PrimOp.ShiftRightOp =>
-        // case PrimOp.DynamicShiftLeftOp =>
-        // case PrimOp.DynamicShiftRightOp =>
+      val (attrs, operands, resultType) = defPrim.op match {
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: sint or uint
+        // Results
+        //   result: sint or uint : <max(lhs, rhs) + 1>
+        case PrimOp.AddOp | PrimOp.SubOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val retType = (lhs._2, rhs._2) match {
+            case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) =>
+              fir.SIntType(lhsWidth.max(rhsWidth) + fir.IntWidth(1))
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) =>
+              fir.UIntType(lhsWidth.max(rhsWidth) + fir.IntWidth(1))
+          }
+          (Seq.empty, Seq(lhs, rhs), retType)
+
+        // Attributes
+        //   amount: 32-bit signless integer
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: uint : <input - amount>
+        case PrimOp.TailOp =>
+          val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
+          val width = input._2 match {
+            case fir.SIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
+            case fir.UIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
+          }
+          val attrs = Seq(
+            mlirNamedAttributeGet(
+              arena,
+              mlirIdentifierGet(arena, ctx, createMlirStr("amount")),
+              mlirIntegerAttrGet(arena, mlirIntegerTypeGet(arena, ctx, 32), amount)
+            )
+          )
+          (attrs, Seq(input), fir.UIntType(fir.IntWidth(width)))
+
+        // Attributes
+        //   amount: 32-bit signless integer
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: uint : <amount>
+        case PrimOp.HeadOp =>
+          val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
+          val width = input._2 match {
+            case fir.SIntType(_) => amount
+            case fir.UIntType(_) => amount
+          }
+          val attrs = Seq(
+            mlirNamedAttributeGet(
+              arena,
+              mlirIdentifierGet(arena, ctx, createMlirStr("amount")),
+              mlirIntegerAttrGet(arena, mlirIntegerTypeGet(arena, ctx, 32), amount)
+            )
+          )
+          (attrs, Seq(input), fir.UIntType(fir.IntWidth(width)))
 
         // Operands
         //   lhs: sint or uint
         //   rhs: sint or uint
         // Results
-        //   result: uint
-        case PrimOp.BitAndOp =>
+        //   result: sint or uint : <lhs + rhs>
+        case PrimOp.TimesOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val retType = (lhs._2, rhs._2) match {
+            case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => fir.SIntType(lhsWidth + rhsWidth)
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth + rhsWidth)
+          }
+          (Seq.empty, Seq(lhs, rhs), retType)
+
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: sint or uint
+        // Results
+        //   result: sint or uint : <if {uint} then {lhs} else {lhs + 1}>
+        case PrimOp.DivideOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val retType = (lhs._2, rhs._2) match {
+            case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => fir.SIntType(lhsWidth + fir.IntWidth(1))
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth)
+          }
+          (Seq.empty, Seq(lhs, rhs), retType)
+
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: sint or uint
+        // Results
+        //   result: sint or uint : <min(lhs, rhs)>
+        case PrimOp.RemOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val retType = (lhs._2, rhs._2) match {
+            case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => fir.SIntType(lhsWidth.min(rhsWidth))
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth.min(rhsWidth))
+          }
+          (Seq.empty, Seq(lhs, rhs), retType)
+
+        // Attributes
+        //   amount: 32-bit signless integer
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: sint or uint : <input + amount>
+        case PrimOp.ShiftLeftOp =>
+          val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
+          val (width, retTypeFn) = input._2 match {
+            case fir.SIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.SIntType)
+            case fir.UIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.UIntType)
+          }
+          val attrs = Seq(
+            mlirNamedAttributeGet(
+              arena,
+              mlirIdentifierGet(arena, ctx, createMlirStr("amount")),
+              mlirIntegerAttrGet(arena, mlirIntegerTypeGet(arena, ctx, 32), amount)
+            )
+          )
+          (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
+
+        // Attributes
+        //   amount: 32-bit signless integer
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: sint or uint : <max(input - amount, 1)>
+        case PrimOp.ShiftRightOp =>
+          val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
+          val (width, retTypeFn) = input._2 match {
+            case fir.SIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.SIntType)
+            case fir.UIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.UIntType)
+          }
+          val attrs = Seq(
+            mlirNamedAttributeGet(
+              arena,
+              mlirIdentifierGet(arena, ctx, createMlirStr("amount")),
+              mlirIntegerAttrGet(arena, mlirIntegerTypeGet(arena, ctx, 32), amount)
+            )
+          )
+          (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
+
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: uint
+        // Results
+        //   result: sint or uint : <lhs + 2^rhs - 1>
+        case PrimOp.DynamicShiftLeftOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val retType = (lhs._2, rhs._2) match {
+            case (fir.SIntType(fir.IntWidth(lhsWidth)), fir.UIntType(fir.IntWidth(rhsWidth))) =>
+              fir.SIntType(fir.IntWidth(lhsWidth.toInt + (1 << rhsWidth.toInt) - 1))
+            case (fir.UIntType(fir.IntWidth(lhsWidth)), fir.UIntType(fir.IntWidth(rhsWidth))) =>
+              fir.UIntType(fir.IntWidth(lhsWidth.toInt + (1 << rhsWidth.toInt) - 1))
+          }
+          (Seq.empty, Seq(lhs, rhs), retType)
+
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: uint
+        // Results
+        //   result: sint or uint : <lhs>
+        case PrimOp.DynamicShiftRightOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val retType = (lhs._2, rhs._2) match {
+            case (fir.SIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.SIntType(lhsWidth)
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth)
+          }
+          (Seq.empty, Seq(lhs, rhs), retType)
+
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: sint or uint
+        // Results
+        //   result: uint : <max(lhs, rhs)>
+        case PrimOp.BitAndOp | PrimOp.BitOrOp | PrimOp.BitXorOp =>
           val (lhs, rhs) = (refArg(0), refArg(1))
           val width = (lhs._2, rhs._2) match {
-            case (fir.SIntType(lhs_width), fir.SIntType(rhs_width)) => assert(lhs_width == rhs_width); lhs_width
-            case (fir.UIntType(lhs_width), fir.UIntType(rhs_width)) => assert(lhs_width == rhs_width); lhs_width
+            case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => lhsWidth.max(rhsWidth)
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => lhsWidth.max(rhsWidth)
           }
-          ("firrtl.and", Seq.empty, Seq(lhs, rhs), fir.UIntType(width))
+          (Seq.empty, Seq(lhs, rhs), fir.UIntType(width))
 
-        // case PrimOp.BitOrOp =>
-        // case PrimOp.BitXorOp =>
-        // case PrimOp.BitNotOp =>
-        // case PrimOp.ConcatOp =>
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: uint : <input>
+        case PrimOp.BitNotOp =>
+          val input = refArg(0)
+          val width = input._2 match {
+            case fir.SIntType(width) => width
+            case fir.UIntType(width) => width
+          }
+          (Seq.empty, Seq(input), fir.UIntType(width))
+
+        // Operands
+        //   lhs: sint or uint
+        //   rhs: sint or uint
+        // Results
+        //   result: uint : <lhs + rhs>
+        case PrimOp.ConcatOp =>
+          val (lhs, rhs) = (refArg(0), refArg(1))
+          val width = (lhs._2, rhs._2) match {
+            case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => lhsWidth + rhsWidth
+            case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => lhsWidth + rhsWidth
+          }
+          (Seq.empty, Seq(lhs, rhs), fir.UIntType(width))
 
         // Attributes
         //   hi: 32-bit signless integer
@@ -1061,69 +1243,143 @@ private[chisel3] object converter {
         // Operands
         //   input: sint or uint
         // Results
-        //   result: uint
+        //   result: uint : <hi - lo + 1>
         case PrimOp.BitsExtractOp =>
-          val (input, hi, lo) = (refArg(0), arg(1), arg(2))
-          val (width, widthValue) = input._2 match {
-            case fir.SIntType(width @ fir.IntWidth(widthValue)) => (width, widthValue)
-            case fir.UIntType(width @ fir.IntWidth(widthValue)) => (width, widthValue)
-          }
-          val intType = mlirIntegerTypeGet(arena, ctx, widthValue.toInt)
+          val (input, hi, lo) =
+            (refArg(0), signlessLitArg(1).toInt, signlessLitArg(2).toInt)
+          val width = hi - lo + 1
+          val intType = mlirIntegerTypeGet(arena, ctx, 32)
           val attrs = Seq(
             mlirNamedAttributeGet(
               arena,
               mlirIdentifierGet(arena, ctx, createMlirStr("hi")),
-              mlirIntegerAttrGet(arena, intType, signlessExtractLitFromArg(hi).toInt)
+              mlirIntegerAttrGet(arena, intType, hi)
             ),
             mlirNamedAttributeGet(
               arena,
               mlirIdentifierGet(arena, ctx, createMlirStr("lo")),
-              mlirIntegerAttrGet(arena, intType, signlessExtractLitFromArg(lo).toInt)
+              mlirIntegerAttrGet(arena, intType, lo)
             )
           )
-
-          ("firrtl.bits", attrs, Seq(input), fir.UIntType(width))
-
-        // case PrimOp.LessOp =>
-        // case PrimOp.LessEqOp =>
-        // case PrimOp.GreaterOp =>
-        // case PrimOp.GreaterEqOp =>
+          (attrs, Seq(input), fir.UIntType(fir.IntWidth(width)))
 
         // Operands
         //   lhs: sint or uint
         //   rhs: sint or uint
         // Results
         //   result: 1-bit uint
-        case PrimOp.EqualOp =>
+        case PrimOp.LessOp | PrimOp.LessEqOp | PrimOp.GreaterOp | PrimOp.GreaterEqOp | PrimOp.EqualOp |
+            PrimOp.NotEqualOp =>
           val (lhs, rhs) = (refArg(0), refArg(1))
-          ("firrtl.eq", Seq.empty, Seq(lhs, rhs), fir.UIntType(fir.IntWidth(1)))
+          (Seq.empty, Seq(lhs, rhs), fir.UIntType(fir.IntWidth(1)))
 
-        // case PrimOp.PadOp =>
-        // case PrimOp.NotEqualOp =>
-        // case PrimOp.NegOp =>
-        // case PrimOp.MultiplexOp =>
-        // case PrimOp.AndReduceOp =>
-        // case PrimOp.OrReduceOp =>
-        // case PrimOp.XorReduceOp =>
-        // case PrimOp.ConvertOp =>
-        // case PrimOp.AsUIntOp =>
-        // case PrimOp.AsSIntOp =>
-        // case PrimOp.AsFixedPointOp =>
-        // case PrimOp.AsIntervalOp =>
-        // case PrimOp.WrapOp =>
-        // case PrimOp.SqueezeOp =>
-        // case PrimOp.ClipOp =>
-        // case PrimOp.SetBinaryPoint =>
-        // case PrimOp.IncreasePrecision =>
-        // case PrimOp.DecreasePrecision =>
-        // case PrimOp.AsClockOp =>
-        // case PrimOp.AsAsyncResetOp =>
+        // Attributes
+        //   amount: 32-bit signless integer
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: sint or uint : <max(input, amount)>
+        case PrimOp.PadOp =>
+          val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
+          val (width, retTypeFn) = input._2 match {
+            case fir.SIntType(fir.IntWidth(inputWidth)) => (max(inputWidth.toInt, amount), fir.SIntType)
+            case fir.UIntType(fir.IntWidth(inputWidth)) => (max(inputWidth.toInt, amount), fir.UIntType)
+          }
+          val attrs = Seq(
+            mlirNamedAttributeGet(
+              arena,
+              mlirIdentifierGet(arena, ctx, createMlirStr("amount")),
+              mlirIntegerAttrGet(arena, mlirIntegerTypeGet(arena, ctx, 32), amount)
+            )
+          )
+          (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
+
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: sint : <input + 1>
+        case PrimOp.NegOp =>
+          val input = refArg(0)
+          val width = input._2 match {
+            case fir.SIntType(inputWidth) => inputWidth + fir.IntWidth(1)
+            case fir.UIntType(inputWidth) => inputWidth + fir.IntWidth(1)
+          }
+          (Seq.empty, Seq(input), fir.SIntType(width))
+
+        // Operands
+        //   sel: 1-bit uint or uint with uninferred width
+        //   high: a passive base type (contain no flips)
+        //   low: a passive base type (contain no flips)
+        // Results
+        //   result: a passive base type (contain no flips)
+        case PrimOp.MultiplexOp =>
+          val (sel, high, low) = (refArg(0), refArg(1), refArg(2))
+          assert(high._2 == low._2)
+          (Seq.empty, Seq(sel, high, low), high._2)
+
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: 1-bit uint
+        case PrimOp.AndReduceOp | PrimOp.OrReduceOp | PrimOp.XorReduceOp =>
+          val input = refArg(0)
+          (Seq.empty, Seq(input), fir.UIntType(fir.IntWidth(1)))
+
+        // Operands
+        //   input: sint or uint
+        // Results
+        //   result: sint <if {uint} then {input + 1} else {input}>
+        case PrimOp.ConvertOp =>
+          val input = refArg(0)
+          val width = input._2 match {
+            case fir.SIntType(inputWidth) => inputWidth
+            case fir.UIntType(inputWidth) => inputWidth + fir.IntWidth(1)
+          }
+          (Seq.empty, Seq(input), fir.SIntType(width))
+
+        // Operands
+        //   input: base type
+        // Results
+        //   result: uint(AsUInt) sint(AsSInt) : <if {sint or uint} then {input} else {1}>
+        case PrimOp.AsUIntOp | PrimOp.AsSIntOp =>
+          val input = refArg(0)
+          val width = input._2 match {
+            case fir.SIntType(inputWidth)                           => inputWidth
+            case fir.UIntType(inputWidth)                           => inputWidth
+            case fir.ClockType | fir.ResetType | fir.AsyncResetType => fir.IntWidth(1)
+          }
+          val retTypeFn = defPrim.op match {
+            case PrimOp.AsUIntOp => fir.UIntType
+            case PrimOp.AsSIntOp => fir.SIntType
+          }
+          (Seq.empty, Seq(input), retTypeFn(width))
+
+        case PrimOp.AsFixedPointOp | PrimOp.AsIntervalOp | PrimOp.WrapOp | PrimOp.SqueezeOp | PrimOp.ClipOp |
+            PrimOp.SetBinaryPoint | PrimOp.IncreasePrecision | PrimOp.DecreasePrecision =>
+          throw new Exception(s"deprecated primitive op: $defPrim")
+
+        // Operands
+        //   input: 1-bit uint/sint/analog, reset, asyncreset, or clock
+        // Results
+        //   result: clock
+        case PrimOp.AsClockOp =>
+          val input = refArg(0)
+          (Seq.empty, Seq(input), fir.ClockType)
+
+        // Operands
+        //   input: 1-bit uint/sint/analog, reset, asyncreset, or clock
+        // Results
+        //   result: clock
+        case PrimOp.AsAsyncResetOp =>
+          val input = refArg(0)
+          (Seq.empty, Seq(input), fir.ClockType)
+
         case _ => throw new Exception(s"defPrim: $defPrim")
       }
 
       val op = buildOp(
         parentBlock(),
-        opName,
+        s"firrtl.${defPrim.op.toString}",
         attrs,
         operands.map(_._1),
         Seq(createMlirType(resultType)),

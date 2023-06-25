@@ -98,6 +98,30 @@ object Smoke extends TestSuite {
     chisel3.assert(false.B, "111")
     assume(false.B)
     cover(false.B, "zzz")
+
+    val primTestS = Reg(SInt(32.W))
+    val primTest = Reg(UInt(32.W))
+    primTest := 123.U
+    primTest := 123.U + 234.U
+    primTest := 123.U - 234.U
+    primTest := 123.U * 234.U
+    primTest := 123.U / 234.U
+    primTest := 123.U % 234.U
+    primTest := 123.U << 234
+    primTest := 123.U >> 234
+    primTest := 123.U << 234.U
+    primTest := 123.U >> 234.U
+    primTest := 123.U < 234.U
+    primTest := 123.U <= 234.U
+    primTest := 123.U > 234.U
+    primTest := 123.U >= 234.U
+    primTest := 123.U === 234.U
+    primTest := 123.U =/= 234.U
+    primTest := 123.U | 234.U
+    primTest := ~123.U
+    primTestS := -123.S
+    primTestS := -primTestS
+    primTestS := Mux(true.B, primTestS, primTestS)
   }
 
   val tests = Tests {
