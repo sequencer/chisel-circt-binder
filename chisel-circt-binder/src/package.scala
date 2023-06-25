@@ -1568,7 +1568,8 @@ private[chisel3] object converter {
     }
   }
   def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit ctx: ConverterContext): Unit = {
-    // TODO: Call C-API Here
+    // TODO
+    throw new Exception("TODO")
   }
   def visitDefModule(
     defModule: DefModule
@@ -1641,6 +1642,7 @@ private[chisel3] object converter {
   }
   def visitConnectInit(connectInit: ConnectInit)(implicit ctx: ConverterContext): Unit = {
     // Not used anywhere
+    throw new Exception("unimplemented")
   }
   def visitDefInvalid(defInvalid: DefInvalid)(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefInvalid(defInvalid)
@@ -1655,7 +1657,8 @@ private[chisel3] object converter {
     ctx.visitWhenEnd(whenEnd)
   }
   def visitDefInstance(defInstance: DefInstance)(implicit ctx: ConverterContext): Unit = {
-    // TODO: unimplemented
+    // TODO
+    throw new Exception("TODO")
   }
   def visitDefMemPort[T <: Data](defMemPort: DefMemPort[T])(implicit ctx: ConverterContext): Unit = {
     ctx.visitDefMemPort(defMemPort)
@@ -1695,8 +1698,10 @@ private[chisel3] object converter {
   }
   def visitVerfiPrintf(printf: Verification[chisel3.printf.Printf])(implicit ctx: ConverterContext): Unit = {
     // TODO: Not used anywhere?
+    throw new Exception("unimplemented")
   }
   def visitVerfiStop(stop: Verification[chisel3.stop.Stop])(implicit ctx: ConverterContext): Unit = {
     // TODO: Not used anywhere?
+    throw new Exception("unimplemented")
   }
 }
