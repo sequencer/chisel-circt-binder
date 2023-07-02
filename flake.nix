@@ -16,6 +16,8 @@
           pkgs = import nixpkgs { inherit system; overlays = [ overlay ]; };
           deps = with pkgs; [
             mill
+            jextract
+            circt
           ];
         in
         {

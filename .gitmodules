@@ -1,5 +1,5 @@
 [submodule "dependencies/chisel3"]
-	path = dependencies/chisel3
+	path = dependencies/chisel
 	url = git@github.com:chipsalliance/chisel3.git
 [submodule "dependencies/firrtl"]
 	path = dependencies/firrtl
@@ -10,9 +10,3 @@
 [submodule "dependencies/chiseltest"]
 	path = dependencies/chiseltest
 	url = git@github.com:ucb-bar/chiseltest.git
-[submodule "dependencies/circt"]
-	path = dependencies/circt
-	url = git@github.com:llvm/circt.git
-[submodule "dependencies/llvm-project"]
-	path = dependencies/llvm-project
-	url = git@github.com:llvm/llvm-project.git
