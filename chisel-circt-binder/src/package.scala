@@ -113,28 +113,28 @@ private[chisel3] object converter {
       }
 
       firType match {
-        case t: fir.UIntType => firrtlGetTypeUInt(arena, ctx, convertFirWidth(t.width))
-        case t: fir.SIntType => firrtlGetTypeSInt(arena, ctx, convertFirWidth(t.width))
-        case fir.ClockType      => firrtlGetTypeClock(arena, ctx)
-        case fir.ResetType      => firrtlGetTypeReset(arena, ctx)
-        case fir.AsyncResetType => firrtlGetTypeAsyncReset(arena, ctx)
-        case t: fir.AnalogType => firrtlGetTypeAnalog(arena, ctx, convertFirWidth(t.width))
+        case t: fir.UIntType => firrtlTypeGetUInt(arena, ctx, convertFirWidth(t.width))
+        case t: fir.SIntType => firrtlTypeGetSInt(arena, ctx, convertFirWidth(t.width))
+        case fir.ClockType      => firrtlTypeGetClock(arena, ctx)
+        case fir.ResetType      => firrtlTypeGetReset(arena, ctx)
+        case fir.AsyncResetType => firrtlTypeGetAsyncReset(arena, ctx)
+        case t: fir.AnalogType => firrtlTypeGetAnalog(arena, ctx, convertFirWidth(t.width))
         case t: fir.VectorType =>
-          firrtlGetTypeVector(arena, ctx, createMlirType(t.tpe), t.size)
+          firrtlTypeGetVector(arena, ctx, createMlirType(t.tpe), t.size)
         case t: fir.BundleType =>
           val fieldsSeg = FIRRTLBundleField.allocateArray(t.fields.length, arena)
           t.fields.zipWithIndex.foreach {
             case (field, i) =>
               val fieldSeg = fieldsSeg.asSlice(FIRRTLBundleField.sizeof() * i, FIRRTLBundleField.sizeof())
-              val flip = field.flip match {
+              val isFlip = field.flip match {
                 case fir.Default => false
                 case fir.Flip    => true
               }
-              FIRRTLBundleField.flip$set(fieldSeg, flip)
-              FIRRTLBundleField.name$slice(fieldSeg).copyFrom(createStrAttr(field.name))
+              FIRRTLBundleField.name$slice(fieldSeg).copyFrom(mlirIdentifierGet(arena, ctx, createMlirStr(field.name)))
+              FIRRTLBundleField.isFlip$set(fieldSeg, isFlip)
               FIRRTLBundleField.type$slice(fieldSeg).copyFrom(createMlirType(field.tpe))
           }
-          firrtlGetTypeBundle(arena, ctx, fieldsSeg, t.fields.length)
+          firrtlTypeGetBundle(arena, ctx, t.fields.length, fieldsSeg)
       }
     }
 
@@ -591,7 +591,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
-            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+            firrtlAttrGetNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -653,10 +653,10 @@ private[chisel3] object converter {
 
       val portsLength = defModule.ports.length
 
-      // FIXME: Currently jextract does not export `enum FIRRTLPortDirection`, so we assume the size of it is 4.
-      val sizeOfFIRRTLPortDirection = 4
+      // FIXME: Currently jextract does not export `enum FIRRTLPortDir`, so we assume the size of it is 4.
+      val sizeOfFIRRTLPortDir = 4
       val directionsAttr =
-        MemorySegment.allocateNative(sizeOfFIRRTLPortDirection * portsLength, arena.scope())
+        MemorySegment.allocateNative(sizeOfFIRRTLPortDir * portsLength, arena.scope())
       val namesAttr = MlirAttribute.allocateArray(portsLength, arena)
       val typesAttr = MlirAttribute.allocateArray(portsLength, arena)
       val annotationsAttr = MlirAttribute.allocateArray(portsLength, arena)
@@ -670,8 +670,8 @@ private[chisel3] object converter {
           val firPort = Converter.convert(port)
 
           val direction = (firPort.direction match {
-            case fir.Input  => FIRRTL_PORT_DIRECTION_INPUT()
-            case fir.Output => FIRRTL_PORT_DIRECTION_OUTPUT()
+            case fir.Input  => FIRRTL_PORT_DIR_INPUT()
+            case fir.Output => FIRRTL_PORT_DIR_OUTPUT()
           })
 
           def fillAttr(attrs: MemorySegment, index: Int, value: MemorySegment) = {
@@ -711,7 +711,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("portDirections")),
-            firrtlGetAttrPortDirections(arena, ctx, directionsAttr, portsLength)
+            firrtlAttrGetPortDirs(arena, ctx, portsLength, directionsAttr)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -793,7 +793,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
-            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+            firrtlAttrGetNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -882,7 +882,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("ruw")),
-            firrtlGetAttrRUW(
+            firrtlAttrGetRUW(
               arena,
               ctx,
               defSeqMemory.readUnderWrite match {
@@ -900,7 +900,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
-            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+            firrtlAttrGetNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -912,7 +912,7 @@ private[chisel3] object converter {
         ),
         Seq.empty,
         Seq(
-          /* result */ chirrtlGetTypeCMemory(
+          /* result */ chirrtlTypeGetCMemory(
             arena,
             ctx,
             createMlirType(Converter.extractType(defSeqMemory.t, defSeqMemory.sourceInfo)),
@@ -932,7 +932,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("direction")),
-            firrtlGetAttrMemDir(
+            firrtlAttrGetMemDir(
               arena,
               ctx,
               defMemPort.dir match {
@@ -959,7 +959,7 @@ private[chisel3] object converter {
         ),
         Seq(
           /* data */ createMlirType(Converter.extractType(defMemPort.id, defMemPort.sourceInfo)),
-          /* port */ chirrtlGetTypeCMemoryPort(arena, ctx)
+          /* port */ chirrtlTypeGetCMemoryPort(arena, ctx)
         ),
         unkLoc
       )
@@ -992,7 +992,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
-            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+            firrtlAttrGetNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -1004,7 +1004,7 @@ private[chisel3] object converter {
         ),
         Seq.empty,
         Seq(
-          /* result */ chirrtlGetTypeCMemory(
+          /* result */ chirrtlTypeGetCMemory(
             arena,
             ctx,
             createMlirType(Converter.extractType(defMemory.t, defMemory.sourceInfo)),
@@ -1401,7 +1401,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
-            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+            firrtlAttrGetNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
           ),
           mlirNamedAttributeGet(
             arena,
@@ -1436,7 +1436,7 @@ private[chisel3] object converter {
           mlirNamedAttributeGet(
             arena,
             mlirIdentifierGet(arena, ctx, createMlirStr("nameKind")),
-            firrtlGetAttrNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
+            firrtlAttrGetNameKind(arena, ctx, FIRRTL_NAME_KIND_INTERESTING_NAME)
           ),
           mlirNamedAttributeGet(
             arena,

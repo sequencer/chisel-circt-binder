@@ -158,33 +158,33 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirExportFIRRTL",
       //
       // FIRRTL Type
-      "firrtlGetTypeUInt",
-      "firrtlGetTypeSInt",
-      "firrtlGetTypeClock",
-      "firrtlGetTypeReset",
-      "firrtlGetTypeAsyncReset",
-      "firrtlGetTypeAnalog",
-      "firrtlGetTypeVector",
-      "firrtlGetTypeBundle",
+      "firrtlTypeGetUInt",
+      "firrtlTypeGetSInt",
+      "firrtlTypeGetClock",
+      "firrtlTypeGetReset",
+      "firrtlTypeGetAsyncReset",
+      "firrtlTypeGetAnalog",
+      "firrtlTypeGetVector",
+      "firrtlTypeGetBundle",
       //
       // FIRRTL Attribute
-      "firrtlGetAttrPortDirections",
-      "firrtlGetAttrNameKind",
-      "firrtlGetAttrRUW",
-      "firrtlGetAttrMemoryInit",
-      "firrtlGetAttrMemDir",
+      "firrtlAttrGetPortDirs",
+      "firrtlAttrGetNameKind",
+      "firrtlAttrGetRUW",
+      "firrtlAttrGetMemoryInit",
+      "firrtlAttrGetMemDir",
       //
       // CHIRRTL Attribute
-      "chirrtlGetTypeCMemory",
-      "chirrtlGetTypeCMemoryPort"
+      "chirrtlTypeGetCMemory",
+      "chirrtlTypeGetCMemoryPort"
     )
   }
 
   def includeConstants = T {
     Seq(
       // enum FIRRTLPortDirection
-      "FIRRTL_PORT_DIRECTION_INPUT",
-      "FIRRTL_PORT_DIRECTION_OUTPUT",
+      "FIRRTL_PORT_DIR_INPUT",
+      "FIRRTL_PORT_DIR_OUTPUT",
       // enum FIRRTLNameKind
       "FIRRTL_NAME_KIND_DROPPABLE_NAME",
       "FIRRTL_NAME_KIND_INTERESTING_NAME",
