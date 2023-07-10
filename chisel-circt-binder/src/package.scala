@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO: change package name to chisel3.internal.circt.panama
 package chisel3.circt
 
 import chisel3.{Aggregate, Data, Element, Mem, SyncReadMem, Vec, VecLike}
@@ -48,19 +49,22 @@ private[chisel3] object converter {
 
   def convert(circuit: Circuit): ConverterContext = {
     implicit val ctx = new ConverterContext
+    // val circuit = visitCircuit(circuit)
     visitCircuit(circuit)
     ctx.dump() // debug
     ctx.exportFIRRTL() // debug
     ctx
   }
   // Context for storing a MLIR Builder
+  // TODO: rename to CIRCTContext
   class ConverterContext {
-    // TODO
+    // TODO: remove this
     def verilog: String = ""
 
-    // TODO
+    // TODO: remove this
     def firrtl: String = ""
 
+    // TODO: change def to val, remember the documentation
     def arena = Arena.openConfined()
 
     val ctx = mlirContextCreate(arena)
@@ -68,12 +72,29 @@ private[chisel3] object converter {
     val chirrtlDialect = mlirGetDialectHandle__chirrtl__(arena)
     mlirDialectHandleLoadDialect(arena, firrtlDialect, ctx)
     mlirDialectHandleLoadDialect(arena, chirrtlDialect, ctx)
-
+    // TODO: use unknown location for now, but we should use the location from chisel
+    // In the future, we may be able to pass entire JVM stack to CIRCT in the “debug mode”
+    // and Chisel SourceInfo may not be useful anymore, since we can directly access SourceInfo with reflection.
+    // some ideas: use com-lihaoyi/sourcecode to reduce the maintaining burden.
     val unkLoc = mlirLocationUnknownGet(arena, ctx)
+    // the empty array(exist only in a context)
     val emptyArrayAttr = mlirArrayAttrGet(arena, ctx, 0, NULL)
 
+    // the Top MLIR Module and its body, used for exporting
+    // TODO: rename to better name.
     val module = mlirModuleCreateEmpty(arena, unkLoc)
+    // TODO: do I need it?
     val moduleBody = mlirModuleGetBody(arena, module)
+    // TODO: rename to better name.
+    var circuit: OpWithBody = null
+    // TODO: rename to better name.
+    var firModule: OpWithBody = null
+
+    // TODO: maintain a Map[Data, MemorySegment]
+    //                    data id   ref to CIRCT
+    //       for the hardware type of Data, we can use chisel3.reflect.DataMirror to query.
+    //       or add new API to CIRCT in the future.
+    // TODO: add cache to name!
     val wires = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val nodes = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val smem = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
@@ -81,12 +102,12 @@ private[chisel3] object converter {
     val mport = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
     val regs = ArrayBuffer.empty[(Long, MemorySegment /* MlirValue */ )]
 
-    var circuit:   OpWithBody = null
-    var firModule: OpWithBody = null
-
+    // TODO: move to outside.
     case class WhenContext(ctx: OpWithBody, var isElse: Boolean)
+    // TODO: use val
     var whenCtx: Stack[WhenContext] = Stack.empty
 
+    // TODO: create a utils object for these helpers
     private[converter] def createMlirStr(str: String): MemorySegment = {
       val strBytes = str.getBytes()
       val strSeg =
@@ -96,6 +117,7 @@ private[chisel3] object converter {
     }
 
     private[converter] def fromMlirStrRef(mlirStr: MemorySegment): String = {
+      // TODO: use val
       var strSlice = MlirStringRef.data$get(mlirStr).asSlice(0, MlirStringRef.length$get(mlirStr))
       new String(strSlice.toArray(JAVA_BYTE))
     }
@@ -188,6 +210,7 @@ private[chisel3] object converter {
       (resultsSeg, results.length)
     }
 
+    // TODO: better name
     private[converter] def parentBlock(): MemorySegment /* MlirBlock */ = {
       if (!whenCtx.isEmpty) {
         val w = whenCtx.top
@@ -222,6 +245,7 @@ private[chisel3] object converter {
       ).results(0)
     }
 
+    // TODO: move to outside.
     case class Region(
       region: MemorySegment /* MlirRegion */,
       blocks: Seq[MemorySegment /* MlirBlock */ ]) {
@@ -234,11 +258,13 @@ private[chisel3] object converter {
       }
     }
 
+    // TODO: move to outside.
     case class Op(
       state:   MemorySegment /* MlirOperationState */,
       op:      MemorySegment /* MlirOperation */,
       results: Seq[MemorySegment /* MlirValue */ ])
 
+    // TODO: move to outside.
     case class OpWithBody(
       state:   MemorySegment /* MlirOperationState */,
       op:      MemorySegment /* MlirOperation */,
@@ -257,8 +283,10 @@ private[chisel3] object converter {
       results:  Seq[MemorySegment /* MlirType */ ],
       loc:      MemorySegment /* MlirLocation */
     ): Op = {
+      // TODO: use val
       var state: MemorySegment /* MlirOperationState */ = NULL
-      var op:    MemorySegment /* MlirOperation */ = NULL
+      // TODO: use val
+      var op: MemorySegment /* MlirOperation */ = NULL
 
       state = mlirOperationStateGet(arena, createMlirStr(opName), loc)
 
@@ -287,6 +315,7 @@ private[chisel3] object converter {
       Op(state, op, resultVals)
     }
 
+    // TODO: merge with buildOp, regions: Option[CurrentTpe]
     private[converter] def buildOpWithBody(
       parent:   MemorySegment /* MlirBlock */,
       regions:  Seq[Seq[(Int, MemorySegment /* MlirType[] */, MemorySegment /* MlirLocation[] */ )]],
@@ -344,6 +373,7 @@ private[chisel3] object converter {
       OpWithBody(state, op, regionsResult)
     }
 
+    // use trait Reference
     abstract class Reference {}
     case class Port(index: Int, tpe: fir.Type) extends Reference
     case class Wire(ref: MemorySegment, tpe: fir.Type) extends Reference
@@ -750,6 +780,14 @@ private[chisel3] object converter {
       )
     }
 
+    // TODO: test this case:
+    //       when(foo){
+    //         when(baz){}.elsewhen(qux){}.otherwise{}
+    //       }.elsewhen(bar){
+    //         when(baz){}.elsewhen(qux){}.otherwise{}
+    //       }.otherwise{
+    //         when(baz){}.elsewhen(qux){}.otherwise{}
+    //       }
     private[converter] def visitAltBegin(altBegin: AltBegin): Unit = {
       assert(false, "unimplemented")
     }
@@ -801,7 +839,10 @@ private[chisel3] object converter {
             emptyArrayAttr
           )
           // attr: inner_sym
+          // TODO: inner_sym is wireName? @schuyler
           // attr: forceable
+          // TODO: I think it is related to Reference Type.
+          //       Not sure create here or later with Annotation?
         ),
         Seq.empty,
         Seq(
@@ -838,6 +879,7 @@ private[chisel3] object converter {
       )
     }
 
+    // FIXME
     private[converter] def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd): Unit = {
       assert(otherwiseEnd.firrtlDepth == 1)
     }
@@ -1030,6 +1072,7 @@ private[chisel3] object converter {
         }
       }
 
+      // TODO: move Converter to this package
       val name = Converter.getRef(defPrim.id, defPrim.sourceInfo).name
 
       val (attrs, operands, resultType) = defPrim.op match {

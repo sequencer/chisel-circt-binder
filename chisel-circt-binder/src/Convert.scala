@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO: change package name to chisel3.internal.circt.panama
 package chisel3.circt
 
 import chisel3.internal.firrtl.Converter
@@ -18,6 +19,7 @@ object Convert extends Phase {
   def transform(annotations: AnnotationSeq): AnnotationSeq =
     annotations.flatMap {
       case ChiselCircuitAnnotation(circuit) =>
+        // TODO: merge package back to this file
         converter.convert(circuit)
         // TODO: return some handler but don't return the circuit
         None
