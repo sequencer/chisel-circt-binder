@@ -209,6 +209,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "MlirValue",
       "MlirLocation",
       "MlirAttribute",
+      "MlirIdentifier",
       "MlirModule",
       "MlirBlock",
       "MlirRegion",

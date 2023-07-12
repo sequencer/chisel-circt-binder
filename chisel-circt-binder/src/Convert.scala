@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package chisel3.circt
+package chisel3.internal.panama
 
 import chisel3.internal.firrtl.Converter
 import chisel3.stage.ChiselCircuitAnnotation

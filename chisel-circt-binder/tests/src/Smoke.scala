@@ -128,7 +128,7 @@ object Smoke extends TestSuite {
     test("cigarette") {
       Seq(
         new chisel3.stage.phases.Elaborate,
-        chisel3.circt.Convert
+        chisel3.internal.panama.Convert
       ).foldLeft(
         firrtl.AnnotationSeq(
           Seq(
@@ -145,7 +145,7 @@ object Smoke extends TestSuite {
     test("all (binder)") {
       Seq(
         new chisel3.stage.phases.Elaborate,
-        chisel3.circt.Convert
+        chisel3.internal.panama.Convert
       ).foldLeft(
         firrtl.AnnotationSeq(
           Seq(
