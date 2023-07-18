@@ -2,7 +2,7 @@
 
 package chisel3.internal.panama
 
-import chisel3.{Aggregate, Data, Element, Mem, SyncReadMem, Vec, VecLike}
+import chisel3.{Aggregate, Data => ChiselData, Element, Mem, SyncReadMem, Vec, VecLike}
 import chisel3.experimental.{BaseModule, SourceInfo}
 import chisel3.internal.{
   AggregateViewBinding,
@@ -33,6 +33,7 @@ import chisel3.internal.{
 import scala.collection.mutable
 import scala.math._
 import chisel3.internal.firrtl._
+import chisel3.internal.HasId
 import firrtl.ir.HasName
 import firrtl.{ir => fir}
 import chisel3.SyncReadMem
@@ -59,22 +60,43 @@ case class Op(
   }
 }
 
+sealed abstract class Reference(data: ChiselData)
+object Reference {
+  final case class Value(ref: MlirValue, data: ChiselData) extends Reference(data)
+  final case class SubField(index: Int, data: ChiselData) extends Reference(data)
+  final case class SubIndex(index: Int, data: ChiselData) extends Reference(data)
+}
+
+sealed abstract class FirTypeOrChiselData
+object FirTypeOrChiselData {
+  final case class Type(tpe: fir.Type) extends FirTypeOrChiselData
+  final case class Data(data: ChiselData) extends FirTypeOrChiselData
+
+  implicit def apply(tpe:  fir.Type) = Type(tpe)
+  implicit def apply(data: ChiselData) = Data(data)
+}
+
+case class Refered(value: MlirValue, private var tpeOrData: FirTypeOrChiselData) {
+  def tpe(): fir.Type = {
+    tpeOrData match {
+      case FirTypeOrChiselData.Type(tpe) => tpe
+      case FirTypeOrChiselData.Data(data) =>
+        val tpe = Converter.extractType(data, null)
+        tpeOrData = FirTypeOrChiselData.Type(tpe)
+        tpe
+    }
+  }
+}
+
 class PanamaCIRCTConverter extends CIRCTConverter {
   val circt = new PanamaCIRCT
 
   val module = circt.mlirModuleCreateEmpty(circt.unkLoc)
-  val moduleBody = circt.mlirModuleGetBody(module)
   val moduleItems = mutable.Map.empty[Long, MlirValue]
-
-  // TODO: refactor
-
-  abstract class Reference {}
-  case class RefValue(ref: MlirValue, firData: Data) extends Reference
-  case class SubField(index: Int, firData: Data) extends Reference
-  case class SubIndex(index: Int, firData: Data) extends Reference
-
   var circuit:   Op = null
   var firModule: Op = null
+
+  // TODO: refactor
 
   case class WhenContext(ctx: Op, var isElse: Boolean)
   var whenCtx: mutable.Stack[WhenContext] = mutable.Stack.empty
@@ -108,6 +130,16 @@ class PanamaCIRCTConverter extends CIRCTConverter {
             )
           )
       }
+    }
+
+    def bitLength(n: Int): Int = {
+      var bits = 0
+      var num = n
+      while (num != 0) {
+        bits += 1
+        num >>>= 1
+      }
+      bits
     }
 
     case class OpBuilder(opName: String, parent: MlirBlock, loc: MlirLocation) {
@@ -150,7 +182,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case (builtRegions, blocks) => {
             val region = circt.mlirRegionCreate()
             val builtBlocks = blocks.map {
-              case _ @(blockArgTypes, blockArgLocs) => {
+              case (blockArgTypes, blockArgLocs) => {
                 val block = circt.mlirBlockCreate(blockArgTypes, blockArgLocs)
                 circt.mlirRegionAppendOwnedBlock(region, block)
                 block
@@ -185,125 +217,99 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         .results(0)
     }
 
-    // TODO: waiting for refactoring
-
-    def parentBlock(): MlirBlock = {
-      if (!whenCtx.isEmpty) {
+    def parentBlock: MlirBlock = {
+      if (whenCtx.nonEmpty) {
         val w = whenCtx.top
-        if (!w.isElse) {
-          w.ctx.region(0).block(0)
-        } else {
-          w.ctx.region(1).block(0)
-        }
+        w.ctx.region(if (w.isElse) 1 else 0).block(0)
       } else {
         firModule.region(0).block(0)
       }
     }
 
-    // got port index inside module
-    def portIndex(data: Data): Reference = {
-      def getPort(enclosure: BaseModule): MlirValue = {
-        val index = enclosure
-          .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
-          .indexWhere(_._2 == data)
-        circt.mlirBlockGetArgument(firModule.region(0).block(0), index)
-      }
-
-      data.binding.map {
-        case PortBinding(enclosure)       => RefValue(getPort(enclosure), data)
-        case SecretPortBinding(enclosure) => RefValue(getPort(enclosure), data)
-        case _                            => throw new Exception("got non-port data")
-      }.getOrElse(throw new Exception("got unbound data"))
-    }
-
-    // got data index for Vec or Record
-    def elementIndex(data: Data): Reference = data.binding.map {
-      case binding: ChildBinding =>
-        binding.parent match {
-          case vec:    Vec[_] => SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
-          case record: chisel3.Record =>
-            SubField(
-              record.elements.size - record.elements.values.iterator.indexOf(data) - 1,
-              data
-            )
+    // Get reference chain for a node
+    def valueReferenceChain(id: HasId): Seq[Reference] = {
+      def rec(id: HasId, chain: Seq[Reference]): Seq[Reference] = {
+        def referToPort(data: ChiselData, enclosure: BaseModule): Reference = {
+          val index = enclosure
+            .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
+            .indexWhere(_._2 == data)
+          val value = circt.mlirBlockGetArgument(firModule.region(0).block(0), index)
+          Reference.Value(value, data)
         }
-      case SampleElementBinding(vec) =>
-        SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
-      case _ => throw new Exception("got non-child data")
-    }.getOrElse(throw new Exception("got unbound data"))
 
-    // Got Reference for a node
-    def reference(node: chisel3.internal.HasId, refChain: Seq[Reference]): Seq[Reference] = {
-
-      def dataRef(id: Long): MlirValue = {
-        moduleItems.get(id) match {
-          case Some(value) => value
-          case None        => throw new Exception(s"item $id not found")
-        }
-      }
-
-      node match {
-        // reference to instance
-        case module: BaseModule =>
-          // access the instance
-          return refChain
-        case data: Data =>
-          // got a data
-          data.binding.getOrElse(throw new Exception("got unbound data")) match {
-            case PortBinding(enclosure)       => return reference(enclosure, refChain :+ portIndex(data))
-            case SecretPortBinding(enclosure) => return reference(enclosure, refChain :+ portIndex(data))
-            case ChildBinding(parent)         => return reference(parent, refChain :+ elementIndex(data))
-            case SampleElementBinding(parent) => return reference(parent, refChain :+ elementIndex(data))
-            case MemoryPortBinding(enclosure, visibility) =>
-              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
-            // case MemTypeBinding(parent)                   =>
-            case WireBinding(enclosure, visibility) =>
-              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
-            case OpBinding(enclosure, visibility) =>
-              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
-            case RegBinding(enclosure, visibility) =>
-              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
-            case unhandled => throw new Exception(s"unhandled binding $unhandled")
+        def referToElement(data: ChiselData): Reference = {
+          data.binding.getOrElse(throw new Exception("non-child data")) match {
+            case binding: ChildBinding =>
+              binding.parent match {
+                case vec:    Vec[_] => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
+                case record: chisel3.Record =>
+                  Reference.SubField(record.elements.size - record.elements.values.iterator.indexOf(data) - 1, data)
+              }
+            case SampleElementBinding(vec) => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
+            case _                         => throw new Exception("non-child data")
           }
-        case mem:  Mem[Data] => return refChain :+ RefValue(dataRef(mem.t._id), mem.t) // TODO: really no parent?
-        case smem: SyncReadMem[Data] =>
-          return refChain :+ RefValue(dataRef(smem.t._id), smem.t) // TODO: really no parent?
-        case unhandled => throw new Exception(s"unhandled node $unhandled")
+        }
+
+        def referToValue(data: ChiselData) = Reference.Value(
+          moduleItems.get(data._id) match {
+            case Some(value) => value
+            case None        => throw new Exception(s"data $data not found")
+          },
+          data
+        )
+
+        id match {
+          case module: BaseModule => chain
+          case data:   ChiselData =>
+            data.binding.getOrElse(throw new Exception("unbound data")) match {
+              case PortBinding(enclosure)                   => rec(enclosure, chain :+ referToPort(data, enclosure))
+              case SecretPortBinding(enclosure)             => rec(enclosure, chain :+ referToPort(data, enclosure))
+              case ChildBinding(parent)                     => rec(parent, chain :+ referToElement(data))
+              case SampleElementBinding(parent)             => rec(parent, chain :+ referToElement(data))
+              case MemoryPortBinding(enclosure, visibility) => rec(enclosure, chain :+ referToValue(data))
+              case WireBinding(enclosure, visibility)       => rec(enclosure, chain :+ referToValue(data))
+              case OpBinding(enclosure, visibility)         => rec(enclosure, chain :+ referToValue(data))
+              case RegBinding(enclosure, visibility)        => rec(enclosure, chain :+ referToValue(data))
+              case unhandled                                => throw new Exception(s"unhandled binding $unhandled")
+            }
+          case mem:  Mem[ChiselData]         => chain :+ referToValue(mem.t)
+          case smem: SyncReadMem[ChiselData] => chain :+ referToValue(smem.t)
+          case unhandled => throw new Exception(s"unhandled node $unhandled")
+        }
       }
-      Seq()
+      rec(id, Seq()).reverse // Reverse to make it root first
     }
 
-    def createReferenceWithType(
-      id: chisel3.internal.HasId
-    ): (MlirValue, fir.Type) = {
+    def referTo(id: HasId): Refered = {
       val indexType = circt.mlirIntegerTypeGet(32)
 
-      val refChain = reference(id, Seq())
+      val refChain = valueReferenceChain(id)
 
-      // After reverse, `Port` or `wire` should be the first element in the chain, so the initialization value of the `foldLeft` is unnecessary
-      refChain.reverse.foldLeft[(MlirValue, fir.Type)]((null, null)) {
-        case ((parent, parent_tpe), ref: Reference) => {
+      // Root value will be the first element in the chain
+      // So the initialization value of the `foldLeft` is unnecessary
+      refChain.foldLeft[Refered](null) {
+        case (parent, ref: Reference) => {
           ref match {
-            case RefValue(value, firData) => (value, Converter.extractType(firData, null))
-            case SubField(index, firData) =>
-              val tpe = Converter.extractType(firData, null)
-              (
+            case Reference.Value(value, data) => Refered(value, data)
+            case Reference.SubField(index, data) =>
+              val tpe = Converter.extractType(data, null)
+              Refered(
                 util
                   .OpBuilder("firrtl.subfield", parentBlock, circt.unkLoc)
                   .withNamedAttr("fieldIndex", circt.mlirIntegerAttrGet(indexType, index))
-                  .withOperand(parent)
+                  .withOperand(parent.value)
                   .withResult(util.convert(tpe))
                   .build()
                   .results(0),
                 tpe
               )
-            case SubIndex(index, firData) =>
-              val tpe = Converter.extractType(firData, null)
-              (
+            case Reference.SubIndex(index, data) =>
+              val tpe = Converter.extractType(data, null)
+              Refered(
                 util
                   .OpBuilder("firrtl.subindex", parentBlock, circt.unkLoc)
                   .withNamedAttr("index", circt.mlirIntegerAttrGet(indexType, index))
-                  .withOperand(parent)
+                  .withOperand(parent.value)
                   .withResult(util.convert(tpe))
                   .build()
                   .results(0),
@@ -314,57 +320,29 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       }
     }
 
-    def createReferenceWithTypeFromArg(
-      arg: Arg
-    ): (MlirValue, fir.Type) = {
-      def bitLength(n: Long): Int = {
-        var bits = 0
-        var num = n
-        while (num != 0) {
-          bits += 1
-          num >>>= 1
+    def referTo(arg: Arg): Refered = {
+      def referToNewConstant(n: Int, w: Width, isSigned: Boolean): Refered = {
+        val (firWidth, valWidth) = w match {
+          case _: UnknownWidth =>
+            val bitLen = util.bitLength(n)
+            (fir.IntWidth(bitLen), bitLen)
+          case w: KnownWidth => (fir.IntWidth(w.get), w.get)
         }
-        bits
+        val resultType = if (isSigned) fir.SIntType(firWidth) else fir.UIntType(firWidth)
+        val valueType =
+          if (isSigned) circt.mlirIntegerTypeSignedGet(valWidth) else circt.mlirIntegerTypeUnsignedGet(valWidth)
+        Refered(util.newConstantValue(resultType, valueType, n.toInt), resultType)
       }
 
       arg match {
-        case Node(id) => createReferenceWithType(id)
-        case ULit(value, width) =>
-          val constantValue = value.toInt
-          val (firWidth, valWidth) = width match {
-            case _: UnknownWidth =>
-              val bitLen = bitLength(constantValue)
-              (fir.IntWidth(bitLen), bitLen)
-            case w: KnownWidth => (fir.IntWidth(w.get), w.get)
-          }
-          val resultType = fir.UIntType(firWidth)
-          val valueType = circt.mlirIntegerTypeUnsignedGet(valWidth)
-          (util.newConstantValue(resultType, valueType, constantValue), resultType)
-        case SLit(value, width) => // TODO: almost as the same with ULit, dedup me
-          val constantValue = value.toInt
-          val (firWidth, valWidth) = width match {
-            case _: UnknownWidth =>
-              val bitLen = bitLength(constantValue)
-              (fir.IntWidth(bitLen), bitLen)
-            case w: KnownWidth => (fir.IntWidth(w.get), w.get)
-          }
-          val resultType = fir.SIntType(firWidth)
-          val valueType = circt.mlirIntegerTypeSignedGet(valWidth)
-          (util.newConstantValue(resultType, valueType, constantValue), resultType)
-        case unhandled => throw new Exception(s"unhandled arg type to be reference: $unhandled")
+        case Node(id)           => referTo(id)
+        case ULit(value, width) => referToNewConstant(value.toInt, width, false)
+        case SLit(value, width) => referToNewConstant(value.toInt, width, true)
+        case unhandled          => throw new Exception(s"unhandled arg type to be reference: $unhandled")
       }
     }
 
-    def createReference(id: chisel3.internal.HasId): MlirValue = {
-      createReferenceWithType(id)._1
-    }
-
-    def createNode(
-      id:         Long,
-      name:       String,
-      resultType: fir.Type,
-      input:      MlirValue
-    ): Unit = {
+    def newNode(id: Long, name: String, resultType: fir.Type, input: MlirValue): Unit = {
       val op = util
         .OpBuilder("firrtl.node", parentBlock, circt.unkLoc)
         .withNamedAttr("name", circt.mlirStringAttrGet(name))
@@ -378,30 +356,26 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     }
   }
 
+  // TODO:
   def dump(): Unit = {
     circt.mlirOperationDump(circt.mlirModuleGetOperation(module))
   }
 
+  // TODO:
   def exportFIRRTL(): Unit = {
     circt.mlirExportFIRRTL(module, message => print(message))
   }
 
   def visitCircuit(name: String): Unit = {
     circuit = util
-      .OpBuilder("firrtl.circuit", moduleBody, circt.unkLoc)
+      .OpBuilder("firrtl.circuit", circt.mlirModuleGetBody(module), circt.unkLoc)
       .withRegion(Seq((Seq.empty, Seq.empty)))
       .withNamedAttr("name", circt.mlirStringAttrGet(name))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
       .build()
   }
 
-  // TODO: refactor me
   def visitDefModule(defModule: DefModule): Unit = {
-    import org.llvm.{circt => c}
-    import org.llvm.circt.c_api
-    import java.lang.foreign._
-    import java.lang.foreign.ValueLayout._
-
     moduleItems.clear()
 
     val ports = defModule.ports.map(Converter.convert(_))
@@ -441,21 +415,22 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitAltBegin(altBegin: AltBegin): Unit = {
+    // TODO
     assert(false, "unimplemented")
   }
 
   def visitAttach(attach: Attach): Unit = {
     util
       .OpBuilder("firrtl.attach", util.parentBlock, circt.unkLoc)
-      .withOperands(attach.locs.map(loc => util.createReference(loc.id)))
+      .withOperands(attach.locs.map(loc => util.referTo(loc.id).value))
       .build()
   }
 
   def visitConnect(connect: Connect): Unit = {
     util
       .OpBuilder("firrtl.connect", util.parentBlock, circt.unkLoc)
-      .withOperand( /* dest */ util.createReference(connect.loc.id))
-      .withOperand( /* src */ util.createReferenceWithTypeFromArg(connect.exp)._1)
+      .withOperand( /* dest */ util.referTo(connect.loc.id).value)
+      .withOperand( /* src */ util.referTo(connect.exp).value)
       .build()
   }
 
@@ -473,39 +448,41 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitDefInvalid(defInvalid: DefInvalid): Unit = {
-    val (dest, destType) = util.createReferenceWithTypeFromArg(defInvalid.arg)
+    val dest = util.referTo(defInvalid.arg)
 
     val invalidValue = util
       .OpBuilder("firrtl.invalidvalue", util.parentBlock, circt.unkLoc)
-      .withResult(util.convert(destType))
+      .withResult(util.convert(dest.tpe))
       .build()
       .results(0)
 
     util
       .OpBuilder("firrtl.connect", util.parentBlock, circt.unkLoc)
-      .withOperand( /* dest */ dest)
+      .withOperand( /* dest */ dest.value)
       .withOperand( /* src */ invalidValue)
       .build()
   }
 
   def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd): Unit = {
+    // TODO:
     assert(otherwiseEnd.firrtlDepth == 1)
   }
 
   def visitWhenBegin(whenBegin: WhenBegin): Unit = {
-    val cond = util.createReferenceWithTypeFromArg(whenBegin.pred)
+    val cond = util.referTo(whenBegin.pred)
 
     val op = util
       .OpBuilder("firrtl.when", util.parentBlock, circt.unkLoc)
       .withRegion( /* then */ Seq((Seq.empty, Seq.empty)))
       .withRegion( /* else */ Seq((Seq.empty, Seq.empty)))
-      .withOperand( /* condition */ cond._1)
+      .withOperand( /* condition */ cond.value)
       .build()
 
     whenCtx.push(WhenContext(op, false))
   }
 
   def visitWhenEnd(whenEnd: WhenEnd): Unit = {
+    // TODO:
     assert(whenEnd.firrtlDepth == 0)
     assert(whenEnd.hasAlt == false)
 
@@ -540,7 +517,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     moduleItems += ((defSeqMemory.t._id, op.results(0)))
   }
 
-  def visitDefMemPort[T <: Data](defMemPort: DefMemPort[T]): Unit = {
+  def visitDefMemPort[T <: ChiselData](defMemPort: DefMemPort[T]): Unit = {
     val op = util
       .OpBuilder("chirrtl.memoryport", util.parentBlock, circt.unkLoc)
       .withNamedAttr(
@@ -556,7 +533,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       )
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defMemPort.id, defMemPort.sourceInfo).name))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .withOperand( /* memory */ util.createReference(defMemPort.source.id))
+      .withOperand( /* memory */ util.referTo(defMemPort.source.id).value)
       .withResult( /* data */ util.convert(Converter.extractType(defMemPort.id, defMemPort.sourceInfo)))
       .withResult( /* port */ circt.chirrtlTypeGetCMemoryPort())
       .build()
@@ -564,8 +541,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     util
       .OpBuilder("chirrtl.memoryport.access", util.parentBlock, circt.unkLoc)
       .withOperand( /* port */ op.results(1))
-      .withOperand( /* index */ util.createReferenceWithTypeFromArg(defMemPort.index)._1)
-      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(defMemPort.clock)._1)
+      .withOperand( /* index */ util.referTo(defMemPort.index).value)
+      .withOperand( /* clock */ util.referTo(defMemPort.clock).value)
       .build()
 
     moduleItems += ((defMemPort.id._id, op.results(0)))
@@ -587,13 +564,12 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     moduleItems += ((defMemory.t._id, op.results(0)))
   }
 
-  def visitDefPrim[T <: Data](defPrim: DefPrim[T]): Unit = {
-    def refArg(index: Int): (MlirValue, fir.Type) = {
-      util.createReferenceWithTypeFromArg(defPrim.args(index))
+  def visitDefPrim[T <: ChiselData](defPrim: DefPrim[T]): Unit = {
+    def arg(index: Int): Refered = {
+      util.referTo(defPrim.args(index))
     }
-    def signlessLitArg(
-      index: Int
-    ): BigInt = {
+
+    def litArg(index: Int): BigInt = {
       defPrim.args(index) match {
         case ILit(value)    => value
         case ULit(value, _) => value
@@ -610,8 +586,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <max(lhs, rhs) + 1>
       case PrimOp.AddOp | PrimOp.SubOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val retType = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val retType = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) =>
             fir.SIntType(lhsWidth.max(rhsWidth) + fir.IntWidth(1))
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) =>
@@ -626,8 +602,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: uint : <input - amount>
       case PrimOp.TailOp =>
-        val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
-        val width = input._2 match {
+        val (input, amount) = (arg(0), litArg(1).toInt)
+        val width = input.tpe match {
           case fir.SIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
           case fir.UIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
         }
@@ -643,8 +619,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: uint : <amount>
       case PrimOp.HeadOp =>
-        val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
-        val width = input._2 match {
+        val (input, amount) = (arg(0), litArg(1).toInt)
+        val width = input.tpe match {
           case fir.SIntType(_) => amount
           case fir.UIntType(_) => amount
         }
@@ -659,8 +635,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <lhs + rhs>
       case PrimOp.TimesOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val retType = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val retType = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => fir.SIntType(lhsWidth + rhsWidth)
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth + rhsWidth)
         }
@@ -672,8 +648,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <if {uint} then {lhs} else {lhs + 1}>
       case PrimOp.DivideOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val retType = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val retType = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => fir.SIntType(lhsWidth + fir.IntWidth(1))
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth)
         }
@@ -685,8 +661,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <min(lhs, rhs)>
       case PrimOp.RemOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val retType = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val retType = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => fir.SIntType(lhsWidth.min(rhsWidth))
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth.min(rhsWidth))
         }
@@ -699,8 +675,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <input + amount>
       case PrimOp.ShiftLeftOp =>
-        val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
-        val (width, retTypeFn) = input._2 match {
+        val (input, amount) = (arg(0), litArg(1).toInt)
+        val (width, retTypeFn) = input.tpe match {
           case fir.SIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.SIntType)
           case fir.UIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.UIntType)
         }
@@ -716,8 +692,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <max(input - amount, 1)>
       case PrimOp.ShiftRightOp =>
-        val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
-        val (width, retTypeFn) = input._2 match {
+        val (input, amount) = (arg(0), litArg(1).toInt)
+        val (width, retTypeFn) = input.tpe match {
           case fir.SIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.SIntType)
           case fir.UIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.UIntType)
         }
@@ -732,8 +708,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <lhs + 2^rhs - 1>
       case PrimOp.DynamicShiftLeftOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val retType = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val retType = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(fir.IntWidth(lhsWidth)), fir.UIntType(fir.IntWidth(rhsWidth))) =>
             fir.SIntType(fir.IntWidth(lhsWidth.toInt + (1 << rhsWidth.toInt) - 1))
           case (fir.UIntType(fir.IntWidth(lhsWidth)), fir.UIntType(fir.IntWidth(rhsWidth))) =>
@@ -747,8 +723,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <lhs>
       case PrimOp.DynamicShiftRightOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val retType = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val retType = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.SIntType(lhsWidth)
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => fir.UIntType(lhsWidth)
         }
@@ -760,8 +736,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: uint : <max(lhs, rhs)>
       case PrimOp.BitAndOp | PrimOp.BitOrOp | PrimOp.BitXorOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val width = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val width = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => lhsWidth.max(rhsWidth)
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => lhsWidth.max(rhsWidth)
         }
@@ -772,8 +748,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: uint : <input>
       case PrimOp.BitNotOp =>
-        val input = refArg(0)
-        val width = input._2 match {
+        val input = arg(0)
+        val width = input.tpe match {
           case fir.SIntType(width) => width
           case fir.UIntType(width) => width
         }
@@ -785,8 +761,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: uint : <lhs + rhs>
       case PrimOp.ConcatOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
-        val width = (lhs._2, rhs._2) match {
+        val (lhs, rhs) = (arg(0), arg(1))
+        val width = (lhs.tpe, rhs.tpe) match {
           case (fir.SIntType(lhsWidth), fir.SIntType(rhsWidth)) => lhsWidth + rhsWidth
           case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) => lhsWidth + rhsWidth
         }
@@ -801,7 +777,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       //   result: uint : <hi - lo + 1>
       case PrimOp.BitsExtractOp =>
         val (input, hi, lo) =
-          (refArg(0), signlessLitArg(1).toInt, signlessLitArg(2).toInt)
+          (arg(0), litArg(1).toInt, litArg(2).toInt)
         val width = hi - lo + 1
         val intType = circt.mlirIntegerTypeGet(32)
         val attrs = Seq(
@@ -820,7 +796,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       //   result: 1-bit uint
       case PrimOp.LessOp | PrimOp.LessEqOp | PrimOp.GreaterOp | PrimOp.GreaterEqOp | PrimOp.EqualOp |
           PrimOp.NotEqualOp =>
-        val (lhs, rhs) = (refArg(0), refArg(1))
+        val (lhs, rhs) = (arg(0), arg(1))
         (Seq.empty, Seq(lhs, rhs), fir.UIntType(fir.IntWidth(1)))
 
       // Attributes
@@ -830,8 +806,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint or uint : <max(input, amount)>
       case PrimOp.PadOp =>
-        val (input, amount) = (refArg(0), signlessLitArg(1).toInt)
-        val (width, retTypeFn) = input._2 match {
+        val (input, amount) = (arg(0), litArg(1).toInt)
+        val (width, retTypeFn) = input.tpe match {
           case fir.SIntType(fir.IntWidth(inputWidth)) => (max(inputWidth.toInt, amount), fir.SIntType)
           case fir.UIntType(fir.IntWidth(inputWidth)) => (max(inputWidth.toInt, amount), fir.UIntType)
         }
@@ -848,8 +824,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint : <input + 1>
       case PrimOp.NegOp =>
-        val input = refArg(0)
-        val width = input._2 match {
+        val input = arg(0)
+        val width = input.tpe match {
           case fir.SIntType(inputWidth) => inputWidth + fir.IntWidth(1)
           case fir.UIntType(inputWidth) => inputWidth + fir.IntWidth(1)
         }
@@ -862,16 +838,16 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: a passive base type (contain no flips)
       case PrimOp.MultiplexOp =>
-        val (sel, high, low) = (refArg(0), refArg(1), refArg(2))
-        assert(high._2 == low._2)
-        (Seq.empty, Seq(sel, high, low), high._2)
+        val (sel, high, low) = (arg(0), arg(1), arg(2))
+        assert(high.tpe == low.tpe)
+        (Seq.empty, Seq(sel, high, low), high.tpe)
 
       // Operands
       //   input: sint or uint
       // Results
       //   result: 1-bit uint
       case PrimOp.AndReduceOp | PrimOp.OrReduceOp | PrimOp.XorReduceOp =>
-        val input = refArg(0)
+        val input = arg(0)
         (Seq.empty, Seq(input), fir.UIntType(fir.IntWidth(1)))
 
       // Operands
@@ -879,8 +855,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: sint <if {uint} then {input + 1} else {input}>
       case PrimOp.ConvertOp =>
-        val input = refArg(0)
-        val width = input._2 match {
+        val input = arg(0)
+        val width = input.tpe match {
           case fir.SIntType(inputWidth) => inputWidth
           case fir.UIntType(inputWidth) => inputWidth + fir.IntWidth(1)
         }
@@ -891,8 +867,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: uint(AsUInt) sint(AsSInt) : <if {sint or uint} then {input} else {1}>
       case PrimOp.AsUIntOp | PrimOp.AsSIntOp =>
-        val input = refArg(0)
-        val width = input._2 match {
+        val input = arg(0)
+        val width = input.tpe match {
           case fir.SIntType(inputWidth)                           => inputWidth
           case fir.UIntType(inputWidth)                           => inputWidth
           case fir.ClockType | fir.ResetType | fir.AsyncResetType => fir.IntWidth(1)
@@ -912,7 +888,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: clock
       case PrimOp.AsClockOp =>
-        val input = refArg(0)
+        val input = arg(0)
         (Seq.empty, Seq(input), fir.ClockType)
 
       // Operands
@@ -920,7 +896,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       // Results
       //   result: clock
       case PrimOp.AsAsyncResetOp =>
-        val input = refArg(0)
+        val input = arg(0)
         (Seq.empty, Seq(input), fir.ClockType)
 
       case _ => throw new Exception(s"defPrim: $defPrim")
@@ -929,10 +905,10 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     val op = util
       .OpBuilder(s"firrtl.${defPrim.op.toString}", util.parentBlock, circt.unkLoc)
       .withNamedAttrs(attrs)
-      .withOperands(operands.map(_._1))
+      .withOperands(operands.map(_.value))
       .withResult(util.convert(resultType))
       .build()
-    util.createNode(defPrim.id._id, name, resultType, op.results(0))
+    util.newNode(defPrim.id._id, name, resultType, op.results(0))
   }
 
   def visitDefReg(defReg: DefReg): Unit = {
@@ -941,7 +917,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defReg.id, defReg.sourceInfo).name))
       .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .withOperand( /* clockVal */ util.createReferenceWithTypeFromArg(defReg.clock)._1)
+      .withOperand( /* clockVal */ util.referTo(defReg.clock).value)
       .withResult( /* result */ util.convert(Converter.extractType(defReg.id, defReg.sourceInfo)))
       .build()
     moduleItems += ((defReg.id._id, op.results(0)))
@@ -953,9 +929,9 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defRegInit.id, defRegInit.sourceInfo).name))
       .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .withOperand( /* clockVal */ util.createReferenceWithTypeFromArg(defRegInit.clock)._1)
-      .withOperand( /* reset */ util.createReferenceWithTypeFromArg(defRegInit.reset)._1)
-      .withOperand( /* init */ util.createReferenceWithTypeFromArg(defRegInit.init)._1)
+      .withOperand( /* clockVal */ util.referTo(defRegInit.clock).value)
+      .withOperand( /* reset */ util.referTo(defRegInit.reset).value)
+      .withOperand( /* init */ util.referTo(defRegInit.init).value)
       .withResult( /* result */ util.convert(Converter.extractType(defRegInit.id, defRegInit.sourceInfo)))
       .build()
     moduleItems += ((defRegInit.id._id, op.results(0)))
@@ -967,7 +943,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .OpBuilder("firrtl.printf", util.parentBlock, circt.unkLoc)
       .withNamedAttr("formatString", circt.mlirStringAttrGet(fmt))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(printf.id, printf.sourceInfo).name))
-      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(printf.clock)._1)
+      .withOperand( /* clock */ util.referTo(printf.clock).value)
       .withOperand(
         /* cond */ util.newConstantValue(
           fir.UIntType(fir.IntWidth(1)),
@@ -975,7 +951,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           1
         )
       )
-      .withOperands( /* substitutions */ args.map(util.createReferenceWithTypeFromArg(_)._1))
+      .withOperands( /* substitutions */ args.map(util.referTo(_).value))
       .build()
   }
 
@@ -984,7 +960,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .OpBuilder("firrtl.stop", util.parentBlock, circt.unkLoc)
       .withNamedAttr("exitCode", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), stop.ret))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(stop.id, stop.sourceInfo).name))
-      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(stop.clock)._1)
+      .withOperand( /* clock */ util.referTo(stop.clock).value)
       .withOperand(
         /* cond */ util.newConstantValue(
           fir.UIntType(fir.IntWidth(1)),
@@ -1004,8 +980,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .OpBuilder(opName, util.parentBlock, circt.unkLoc)
       .withNamedAttr("message", circt.mlirStringAttrGet(verifi.message))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(verifi.id, verifi.sourceInfo).name))
-      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(verifi.clock)._1)
-      .withOperand( /* predicate */ util.createReferenceWithTypeFromArg(verifi.predicate)._1)
+      .withOperand( /* clock */ util.referTo(verifi.clock).value)
+      .withOperand( /* predicate */ util.referTo(verifi.predicate).value)
       .withOperand(
         /* enable */ util.newConstantValue(
           fir.UIntType(fir.IntWidth(1)),
@@ -1013,7 +989,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           1
         )
       )
-      .withOperands( /* substitutions */ args.map(util.createReferenceWithTypeFromArg(_)._1))
+      .withOperands( /* substitutions */ args.map(util.referTo(_).value))
       .build()
   }
 
@@ -1033,11 +1009,10 @@ class PanamaCIRCTConverter extends CIRCTConverter {
 }
 
 private[chisel3] object PanamaCIRCTConverter {
-  // Some initialize code when JVM start.
-
   def convert(circuit: Circuit): CIRCTConverter = {
     implicit val cvt = new PanamaCIRCTConverter
     visitCircuit(circuit)
+    // TODO:
     cvt.dump() // debug
     cvt.exportFIRRTL() // debug
     cvt
@@ -1084,11 +1059,11 @@ private[chisel3] object PanamaCIRCTConverter {
       // Definition
       case defInstance: DefInstance =>
         visitDefInstance(defInstance)
-      case defMemPort: DefMemPort[Data] =>
+      case defMemPort: DefMemPort[ChiselData] =>
         visitDefMemPort(defMemPort)
       case defMemory: DefMemory =>
         visitDefMemory(defMemory)
-      case defPrim: DefPrim[Data] =>
+      case defPrim: DefPrim[ChiselData] =>
         visitDefPrim(defPrim)
       case defReg: DefReg =>
         visitDefReg(defReg)
@@ -1145,13 +1120,13 @@ private[chisel3] object PanamaCIRCTConverter {
     // TODO
     throw new Exception("TODO")
   }
-  def visitDefMemPort[T <: Data](defMemPort: DefMemPort[T])(implicit cvt: CIRCTConverter): Unit = {
+  def visitDefMemPort[T <: ChiselData](defMemPort: DefMemPort[T])(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitDefMemPort(defMemPort)
   }
   def visitDefMemory(defMemory: DefMemory)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitDefMemory(defMemory)
   }
-  def visitDefPrim[T <: Data](defPrim: DefPrim[T])(implicit cvt: CIRCTConverter): Unit = {
+  def visitDefPrim[T <: ChiselData](defPrim: DefPrim[T])(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitDefPrim(defPrim)
   }
   def visitDefReg(defReg: DefReg)(implicit cvt: CIRCTConverter): Unit = {
