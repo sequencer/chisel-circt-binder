@@ -18,7 +18,8 @@ object Convert extends Phase {
   def transform(annotations: AnnotationSeq): AnnotationSeq =
     annotations.flatMap {
       case ChiselCircuitAnnotation(circuit) =>
-        PanamaCIRCTConverter.convert(circuit)
+        val cvt = PanamaCIRCTConverter.convert(circuit)
+        println(cvt.exportFIRRTL)
         // TODO: return some handler but don't return the circuit
         None
       case a => Some(a)

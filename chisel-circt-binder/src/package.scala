@@ -379,11 +379,9 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     circt.mlirOperationDump(circt.mlirModuleGetOperation(mlirRootModule))
   }
 
-  // TODO:
   def exportFIRRTL(): String = {
     var ret = new String
-    // TODO: FIXME
-    circt.mlirExportFIRRTL(mlirRootModule, message => print(message))
+    circt.mlirExportFIRRTL(mlirRootModule, message => ret += message)
     ret
   }
 
@@ -1033,11 +1031,10 @@ private[chisel3] object PanamaCIRCTConverter {
   def convert(circuit: Circuit): CIRCTConverter = {
     implicit val cvt = new PanamaCIRCTConverter
     visitCircuit(circuit)
-    // TODO:
-    // cvt.dumpMlir()
-    println(cvt.exportFIRRTL()) // debug
     cvt
   }
+
+  def firrtl(implicit cvt: CIRCTConverter): String = cvt.exportFIRRTL()
 
   def visitCircuit(circuit: Circuit)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitCircuit(circuit.name)
