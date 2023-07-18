@@ -122,6 +122,74 @@ object Smoke extends TestSuite {
     primTestS := -123.S
     primTestS := -primTestS
     primTestS := Mux(true.B, primTestS, primTestS)
+
+    when(io.enable) {
+      when(io.write) {
+        mem.write(io.addr, io.dataIn)
+      }.elsewhen(io.enable) {
+        when(io.write) {
+          mem.write(io.addr, io.dataIn)
+        }.elsewhen(io.enable) {
+          mem.write(io.addr, io.dataIn)
+        }.elsewhen(io.enable) {
+          when(io.write) {
+            mem.write(io.addr, io.dataIn)
+          }.elsewhen(io.enable) {
+            mem.write(io.addr, io.dataIn)
+          }.elsewhen(io.enable) {
+            when(io.write) {
+              mem.write(io.addr, io.dataIn)
+            }.elsewhen(io.enable) {
+              mem.write(io.addr, io.dataIn)
+            }.elsewhen(io.enable) {
+              when(io.write) {
+                mem.write(io.addr, io.dataIn)
+              }.elsewhen(io.enable) {
+                mem.write(io.addr, io.dataIn)
+              }.otherwise {
+                mem.write(io.addr, io.dataIn)
+              }
+            }.otherwise {
+              mem.write(io.addr, io.dataIn)
+            }
+          }.otherwise {
+            mem.write(io.addr, io.dataIn)
+          }
+        }.otherwise {
+          mem.write(io.addr, io.dataIn)
+        }
+      }.otherwise {
+        mem.write(io.addr, io.dataIn)
+      }
+    }.elsewhen(io.enable) {
+      when(io.write) {
+        mem.write(io.addr, io.dataIn)
+      }.elsewhen(io.enable) {
+        when(io.write) {
+          mem.write(io.addr, io.dataIn)
+        }.elsewhen(io.enable) {
+          mem.write(io.addr, io.dataIn)
+        }.elsewhen(io.enable) {
+          when(io.write) {
+            mem.write(io.addr, io.dataIn)
+          }.elsewhen(io.enable) {
+            mem.write(io.addr, io.dataIn)
+          }.elsewhen(io.enable) {
+            when(io.write) {
+              mem.write(io.addr, io.dataIn)
+            }.elsewhen(io.enable) {
+              mem.write(io.addr, io.dataIn)
+            }.elsewhen(io.enable) {
+              when(io.write) {
+                mem.write(io.addr, io.dataIn)
+              }.elsewhen(io.enable) {
+                mem.write(io.addr, io.dataIn)
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   val tests = Tests {

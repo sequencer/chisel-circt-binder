@@ -33,7 +33,10 @@ class PanamaCIRCT {
   // Public items for outside
 
   // Constants for this instance
-  // TODO: Constructing source locations correctly
+  // TODO: use unknown location for now, but we should use the location from chisel
+  // In the future, we may be able to pass entire JVM stack to CIRCT in the “debug mode”
+  // and Chisel SourceInfo may not be useful anymore, since we can directly access SourceInfo with reflection.
+  // some ideas: use com-lihaoyi/sourcecode to reduce the maintaining burden.
   val unkLoc = mlirLocationUnknownGet()
   val emptyArrayAttr = mlirArrayAttrGet(Seq.empty)
 
