@@ -44,6 +44,7 @@ import chisel3.internal.panama.circt._
 import java.lang.foreign._
 import java.lang.foreign.MemorySegment.NULL
 import java.lang.foreign.ValueLayout._
+import scala.collection.mutable
 
 abstract class CIRCTConverter {
   def dump()
@@ -86,15 +87,9 @@ class CIRCTConverterPanama extends CIRCTConverter {
   // TODO: refactor
 
   abstract class Reference {}
-  case class Port(index: Int, tpe: fir.Type) extends Reference
-  case class Wire(ref: MlirValue, tpe: fir.Type) extends Reference
-  case class Node_(ref: MlirValue, tpe: fir.Type) extends Reference
-  case class SMem(ref: MlirValue, tpe: fir.Type) extends Reference
-  case class CMem(ref: MlirValue, tpe: fir.Type) extends Reference
-  case class MPort(ref: MlirValue, tpe: fir.Type) extends Reference
-  case class Reg(ref: MlirValue, tpe: fir.Type) extends Reference
-  case class SubField(index: Int, tpe: fir.Type) extends Reference
-  case class SubIndex(index: Int, tpe: fir.Type) extends Reference
+  case class RefValue(ref: MlirValue, firData: Data) extends Reference
+  case class SubField(index: Int, firData: Data) extends Reference
+  case class SubIndex(index: Int, firData: Data) extends Reference
 
   case class Region(
     region: MlirRegion,
@@ -119,12 +114,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
     }
   }
 
-  val wires = ArrayBuffer.empty[(Long, MlirValue)]
-  val nodes = ArrayBuffer.empty[(Long, MlirValue)]
-  val smem = ArrayBuffer.empty[(Long, MlirValue)]
-  val cmem = ArrayBuffer.empty[(Long, MlirValue)]
-  val mport = ArrayBuffer.empty[(Long, MlirValue)]
-  val regs = ArrayBuffer.empty[(Long, MlirValue)]
+  val moduleItems = mutable.Map.empty[Long, MlirValue]
 
   var circuit:   OpWithBody = null
   var firModule: OpWithBody = null
@@ -257,102 +247,47 @@ class CIRCTConverterPanama extends CIRCTConverter {
     }
 
     // got port index inside module
-    def portIndex(data: Data): Reference = data.binding.map {
-      case SecretPortBinding(enclosure) =>
-        Port(
-          enclosure
-            .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
-            .indexWhere(_._2 == data),
-          Converter.extractType(data, null)
-        )
-      case PortBinding(enclosure) =>
-        Port(
-          enclosure
-            .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
-            .indexWhere(_._2 == data),
-          Converter.extractType(data, null)
-        )
-      case _ => throw new Exception("got non-port data")
-    }.getOrElse(throw new Exception("got unbound data"))
-
-    def wireRef(data: Data): Reference = {
-      val value = wires.find {
-        case (id, _) => id == data._id
-      } match {
-        case Some((_, value)) => value
-        case None             => throw new Exception("wire not found")
+    def portIndex(data: Data): Reference = {
+      def getPort(enclosure: BaseModule): MlirValue = {
+        val index = enclosure
+          .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
+          .indexWhere(_._2 == data)
+        circt.mlirBlockGetArgument(firModule.region(0).block(0), index)
       }
-      Wire(value, Converter.extractType(data, null))
-    }
 
-    def nodeRef(data: Data): Reference = {
-      val value = nodes.find {
-        case (id, _) => id == data._id
-      } match {
-        case Some((_, value)) => value
-        case None             => throw new Exception("node not found")
-      }
-      Node_(value, Converter.extractType(data, null))
-    }
-
-    def smemRef(data: Data): Reference = {
-      val value = smem.find {
-        case (id, _) => id == data._id
-      } match {
-        case Some((_, value)) => value
-        case None             => throw new Exception("smem not found")
-      }
-      SMem(value, Converter.extractType(data, null))
-    }
-
-    def cmemRef(data: Data): Reference = {
-      val value = cmem.find {
-        case (id, _) => id == data._id
-      } match {
-        case Some((_, value)) => value
-        case None             => throw new Exception("cmem not found")
-      }
-      CMem(value, Converter.extractType(data, null))
-    }
-
-    def mportRef(data: Data): Reference = {
-      val value = mport.find {
-        case (id, _) => id == data._id
-      } match {
-        case Some((_, value)) => value
-        case None             => throw new Exception("mport not found")
-      }
-      MPort(value, Converter.extractType(data, null))
-    }
-
-    def regRef(data: Data): Reference = {
-      val value = regs.find {
-        case (id, _) => id == data._id
-      } match {
-        case Some((_, value)) => value
-        case None             => throw new Exception("reg not found")
-      }
-      Reg(value, Converter.extractType(data, null))
+      data.binding.map {
+        case PortBinding(enclosure)       => RefValue(getPort(enclosure), data)
+        case SecretPortBinding(enclosure) => RefValue(getPort(enclosure), data)
+        case _                            => throw new Exception("got non-port data")
+      }.getOrElse(throw new Exception("got unbound data"))
     }
 
     // got data index for Vec or Record
     def elementIndex(data: Data): Reference = data.binding.map {
       case binding: ChildBinding =>
         binding.parent match {
-          case vec:    Vec[_] => SubIndex(vec.elementsIterator.indexWhere(_ == data), Converter.extractType(data, null))
+          case vec:    Vec[_] => SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
           case record: chisel3.Record =>
             SubField(
               record.elements.size - record.elements.values.iterator.indexOf(data) - 1,
-              Converter.extractType(data, null)
+              data
             )
         }
       case SampleElementBinding(vec) =>
-        SubIndex(vec.elementsIterator.indexWhere(_ == data), Converter.extractType(data, null))
+        SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
       case _ => throw new Exception("got non-child data")
     }.getOrElse(throw new Exception("got unbound data"))
 
     // Got Reference for a node
     def reference(node: chisel3.internal.HasId, refChain: Seq[Reference]): Seq[Reference] = {
+
+      def dataRef(id: Long): MlirValue = {
+        moduleItems.get(id) match {
+          case Some(value) => value
+          case None        => throw new Exception(s"item $id not found")
+        }
+      }
+
       node match {
         // reference to instance
         case module: BaseModule =>
@@ -361,19 +296,24 @@ class CIRCTConverterPanama extends CIRCTConverter {
         case data: Data =>
           // got a data
           data.binding.getOrElse(throw new Exception("got unbound data")) match {
-            case PortBinding(enclosure)                   => return reference(enclosure, refChain :+ portIndex(data))
-            case SecretPortBinding(enclosure)             => return reference(enclosure, refChain :+ portIndex(data))
-            case ChildBinding(parent)                     => return reference(parent, refChain :+ elementIndex(data))
-            case SampleElementBinding(parent)             => return reference(parent, refChain :+ elementIndex(data))
-            case MemoryPortBinding(enclosure, visibility) => return reference(enclosure, refChain :+ mportRef(data))
+            case PortBinding(enclosure)       => return reference(enclosure, refChain :+ portIndex(data))
+            case SecretPortBinding(enclosure) => return reference(enclosure, refChain :+ portIndex(data))
+            case ChildBinding(parent)         => return reference(parent, refChain :+ elementIndex(data))
+            case SampleElementBinding(parent) => return reference(parent, refChain :+ elementIndex(data))
+            case MemoryPortBinding(enclosure, visibility) =>
+              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
             // case MemTypeBinding(parent)                   =>
-            case WireBinding(enclosure, visibility) => return reference(enclosure, refChain :+ wireRef(data))
-            case OpBinding(enclosure, visibility)   => return reference(enclosure, refChain :+ nodeRef(data))
-            case RegBinding(enclosure, visibility)  => return reference(enclosure, refChain :+ regRef(data))
-            case unhandled                          => throw new Exception(s"unhandled binding $unhandled")
+            case WireBinding(enclosure, visibility) =>
+              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
+            case OpBinding(enclosure, visibility) =>
+              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
+            case RegBinding(enclosure, visibility) =>
+              return reference(enclosure, refChain :+ RefValue(dataRef(data._id), data))
+            case unhandled => throw new Exception(s"unhandled binding $unhandled")
           }
-        case mem:  Mem[Data]         => return refChain :+ cmemRef(mem.t) // TODO: really no parent?
-        case smem: SyncReadMem[Data] => return refChain :+ smemRef(smem.t) // TODO: really no parent?
+        case mem:  Mem[Data] => return refChain :+ RefValue(dataRef(mem.t._id), mem.t) // TODO: really no parent?
+        case smem: SyncReadMem[Data] =>
+          return refChain :+ RefValue(dataRef(smem.t._id), smem.t) // TODO: really no parent?
         case unhandled => throw new Exception(s"unhandled node $unhandled")
       }
       Seq()
@@ -390,15 +330,9 @@ class CIRCTConverterPanama extends CIRCTConverter {
       refChain.reverse.foldLeft[(MlirValue, fir.Type)]((null, null)) {
         case ((parent, parent_tpe), ref: Reference) => {
           ref match {
-            case Port(ref, tpe) =>
-              (circt.mlirBlockGetArgument(firModule.region(0).block(0), ref), tpe)
-            case Wire(value, tpe)  => (value, tpe)
-            case Node_(value, tpe) => (value, tpe)
-            case SMem(value, tpe)  => (value, tpe)
-            case CMem(value, tpe)  => (value, tpe)
-            case MPort(value, tpe) => (value, tpe)
-            case Reg(value, tpe)   => (value, tpe)
-            case SubField(index, tpe) =>
+            case RefValue(value, firData) => (value, Converter.extractType(firData, null))
+            case SubField(index, firData) =>
+              val tpe = Converter.extractType(firData, null)
               (
                 buildOp(
                   parentBlock(),
@@ -410,7 +344,8 @@ class CIRCTConverterPanama extends CIRCTConverter {
                 ).results(0),
                 tpe
               )
-            case SubIndex(index, tpe) =>
+            case SubIndex(index, firData) =>
+              val tpe = Converter.extractType(firData, null)
               (
                 buildOp(
                   parentBlock(),
@@ -495,7 +430,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
         ),
         circt.unkLoc
       )
-      nodes += ((id, op.results(0)))
+      moduleItems += ((id, op.results(0)))
     }
   }
 
@@ -529,8 +464,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
     import java.lang.foreign._
     import java.lang.foreign.ValueLayout._
 
-    // TODO: clear all
-    wires.clear()
+    moduleItems.clear()
 
     val ports = defModule.ports.map(Converter.convert(_))
     val (portsTypes, portsTypeAttrs) = ports.foldLeft((Seq.empty[MlirType], Seq.empty[MlirAttribute])) {
@@ -637,7 +571,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
       ),
       circt.unkLoc
     )
-    wires += ((defWire.id._id, op.results(0)))
+    moduleItems += ((defWire.id._id, op.results(0)))
   }
 
   def visitDefInvalid(defInvalid: DefInvalid): Unit = {
@@ -739,7 +673,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
       ),
       circt.unkLoc
     )
-    smem += ((defSeqMemory.t._id, op.results(0)))
+    moduleItems += ((defSeqMemory.t._id, op.results(0)))
   }
 
   def visitDefMemPort[T <: Data](defMemPort: DefMemPort[T]): Unit = {
@@ -789,7 +723,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
       Seq.empty,
       circt.unkLoc
     )
-    mport += ((defMemPort.id._id, op.results(0)))
+    moduleItems += ((defMemPort.id._id, op.results(0)))
   }
 
   def visitDefMemory(defMemory: DefMemory): Unit = {
@@ -818,7 +752,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
       ),
       circt.unkLoc
     )
-    cmem += ((defMemory.t._id, op.results(0)))
+    moduleItems += ((defMemory.t._id, op.results(0)))
   }
 
   def visitDefPrim[T <: Data](defPrim: DefPrim[T]): Unit = {
@@ -1212,7 +1146,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
       ),
       circt.unkLoc
     )
-    regs += ((defReg.id._id, op.results(0)))
+    moduleItems += ((defReg.id._id, op.results(0)))
   }
 
   def visitDefRegInit(defRegInit: DefRegInit): Unit = {
@@ -1243,7 +1177,7 @@ class CIRCTConverterPanama extends CIRCTConverter {
       ),
       circt.unkLoc
     )
-    regs += ((defRegInit.id._id, op.results(0)))
+    moduleItems += ((defRegInit.id._id, op.results(0)))
   }
 
   def visitPrintf(parent: Component, printf: Printf): Unit = {
