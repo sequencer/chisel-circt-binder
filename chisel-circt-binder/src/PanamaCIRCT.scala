@@ -10,7 +10,7 @@ import org.llvm.circt
 import org.llvm.circt.c_api // TODO: rename it to CAPI
 
 // Wrapper for CIRCT APIs with Panama framework
-class CIRCT {
+class PanamaCIRCT {
   // Open an arena for memory management of MLIR API calling in this context instance
 
   /* TODO: private */
