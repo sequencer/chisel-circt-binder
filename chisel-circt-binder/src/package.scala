@@ -30,7 +30,7 @@ import chisel3.internal.{
   WireBinding
 }
 
-import scala.collection.mutable.{ArrayBuffer, Stack}
+import scala.collection.mutable
 import scala.math._
 import chisel3.internal.firrtl._
 import firrtl.ir.HasName
@@ -40,18 +40,31 @@ import chisel3.SyncReadMem
 import chisel3.internal.CIRCTConverter
 import chisel3.internal.panama.circt._
 
-// TODO: Remove these imports
+case class Region(
+  region: MlirRegion,
+  blocks: Seq[MlirBlock]) {
 
-import java.lang.foreign._
-import java.lang.foreign.MemorySegment.NULL
-import java.lang.foreign.ValueLayout._
-import scala.collection.mutable
+  def get(): MlirRegion = region
+  def block(i: Int): MlirBlock = blocks(i)
+}
+
+case class Op(
+  state:   MlirOperationState,
+  op:      MlirOperation,
+  regions: Seq[Region],
+  results: Seq[MlirValue]) {
+
+  def region(i: Int): Region = {
+    regions(i)
+  }
+}
 
 class PanamaCIRCTConverter extends CIRCTConverter {
   val circt = new PanamaCIRCT
 
   val module = circt.mlirModuleCreateEmpty(circt.unkLoc)
   val moduleBody = circt.mlirModuleGetBody(module)
+  val moduleItems = mutable.Map.empty[Long, MlirValue]
 
   // TODO: refactor
 
@@ -60,36 +73,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   case class SubField(index: Int, firData: Data) extends Reference
   case class SubIndex(index: Int, firData: Data) extends Reference
 
-  case class Region(
-    region: MlirRegion,
-    blocks: Seq[MlirBlock]) {
+  var circuit:   Op = null
+  var firModule: Op = null
 
-    def get(): MlirRegion = region
-    def block(i: Int): MlirBlock = blocks(i)
-  }
-
-  case class Op(
-    state:   MlirOperationState,
-    op:      MlirOperation,
-    results: Seq[MlirValue])
-
-  case class OpWithBody(
-    state:   MlirOperationState,
-    op:      MlirOperation,
-    regions: Seq[Region]) {
-
-    def region(i: Int): Region = {
-      regions(i)
-    }
-  }
-
-  val moduleItems = mutable.Map.empty[Long, MlirValue]
-
-  var circuit:   OpWithBody = null
-  var firModule: OpWithBody = null
-
-  case class WhenContext(ctx: OpWithBody, var isElse: Boolean)
-  var whenCtx: Stack[WhenContext] = Stack.empty
+  case class WhenContext(ctx: Op, var isElse: Boolean)
+  var whenCtx: mutable.Stack[WhenContext] = mutable.Stack.empty
 
   object util {
     def convert(firType: fir.Type): MlirType = {
@@ -122,28 +110,66 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       }
     }
 
-    def buildOp(
-      parent:   MlirBlock,
-      opName:   String,
-      attrs:    Seq[MlirNamedAttribute],
-      operands: Seq[MlirValue],
-      results:  Seq[MlirType],
-      loc:      MlirLocation
-    ): Op = {
-      val state = circt.mlirOperationStateGet(opName, loc)
+    case class OpBuilder(opName: String, parent: MlirBlock, loc: MlirLocation) {
+      var regionsBlocks: Seq[Seq[(Seq[MlirType], Seq[MlirLocation])]] = Seq.empty
+      var attrs:         Seq[MlirNamedAttribute] = Seq.empty
+      var operands:      Seq[MlirValue] = Seq.empty
+      var results:       Seq[MlirType] = Seq.empty
 
-      circt.mlirOperationStateAddAttributes(state, attrs)
-      circt.mlirOperationStateAddOperands(state, operands)
-      circt.mlirOperationStateAddResults(state, results)
-
-      val op = circt.mlirOperationCreate(state)
-      circt.mlirBlockAppendOwnedOperation(parent, op)
-
-      val resultVals = results.zipWithIndex.map {
-        case (_, i) => circt.mlirOperationGetResult(op, i)
+      def withRegion(block: Seq[(Seq[MlirType], Seq[MlirLocation])]): OpBuilder = {
+        regionsBlocks = regionsBlocks :+ block
+        this
+      }
+      def withRegions(blocks: Seq[Seq[(Seq[MlirType], Seq[MlirLocation])]]): OpBuilder = {
+        regionsBlocks = regionsBlocks ++ blocks
+        this
       }
 
-      Op(state, op, resultVals)
+      def withNamedAttr(name: String, attr: MlirAttribute): OpBuilder = {
+        attrs = attrs :+ circt.mlirNamedAttributeGet(name, attr)
+        this
+      }
+      def withNamedAttrs(as: Seq[(String, MlirAttribute)]): OpBuilder = {
+        as.foreach(a => withNamedAttr(a._1, a._2)); this
+      }
+
+      def withOperand(o: MlirValue): OpBuilder = { operands = operands :+ o; this }
+      def withOperands(os: Seq[MlirValue]): OpBuilder = { operands = operands ++ os; this }
+
+      def withResult(r: MlirType): OpBuilder = { results = results :+ r; this }
+      def withResults(rs: Seq[MlirType]): OpBuilder = { results = results ++ rs; this }
+
+      def build(): Op = {
+        val state = circt.mlirOperationStateGet(opName, loc)
+
+        circt.mlirOperationStateAddAttributes(state, attrs)
+        circt.mlirOperationStateAddOperands(state, operands)
+        circt.mlirOperationStateAddResults(state, results)
+
+        val builtRegions = regionsBlocks.foldLeft(Seq.empty[Region]) {
+          case (builtRegions, blocks) => {
+            val region = circt.mlirRegionCreate()
+            val builtBlocks = blocks.map {
+              case _ @(blockArgTypes, blockArgLocs) => {
+                val block = circt.mlirBlockCreate(blockArgTypes, blockArgLocs)
+                circt.mlirRegionAppendOwnedBlock(region, block)
+                block
+              }
+            }
+            builtRegions :+ Region(region, builtBlocks)
+          }
+        }
+        circt.mlirOperationStateAddOwnedRegions(state, builtRegions.map(_.region))
+
+        val op = circt.mlirOperationCreate(state)
+        circt.mlirBlockAppendOwnedOperation(parent, op)
+
+        val resultVals = results.zipWithIndex.map {
+          case (_, i) => circt.mlirOperationGetResult(op, i)
+        }
+
+        Op(state, op, builtRegions, resultVals)
+      }
     }
 
     def newConstantValue(
@@ -151,14 +177,12 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       valueType:  MlirType,
       value:      Int
     ): MlirValue = {
-      buildOp(
-        parentBlock(),
-        "firrtl.constant",
-        Seq(circt.mlirNamedAttributeGet("value", circt.mlirIntegerAttrGet(valueType, value))),
-        Seq.empty,
-        Seq( /* result */ util.convert(resultType)),
-        circt.unkLoc
-      ).results(0)
+      util
+        .OpBuilder("firrtl.constant", parentBlock, circt.unkLoc)
+        .withNamedAttr("value", circt.mlirIntegerAttrGet(valueType, value))
+        .withResult(util.convert(resultType))
+        .build()
+        .results(0)
     }
 
     // TODO: waiting for refactoring
@@ -174,45 +198,6 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       } else {
         firModule.region(0).block(0)
       }
-    }
-
-    // TODO: refactor me
-    def buildOpWithBody(
-      parent:       MlirBlock,
-      inputRegions: Seq[Seq[(Seq[MlirType], Seq[MlirLocation])]],
-      opName:       String,
-      attrs:        Seq[MlirNamedAttribute],
-      operands:     Seq[MlirValue],
-      results:      Seq[MlirType],
-      loc:          MlirLocation
-    ): OpWithBody = {
-      val (regions, regionsResult) = inputRegions.foldLeft(Seq.empty[MlirRegion], Seq.empty[Region]) {
-        case ((regions, regionsResult), blocks) => {
-          val region = circt.mlirRegionCreate()
-
-          val blocksResult = blocks.map {
-            case block @ (blockArgTypes, blockArgLocs) => {
-              val block = circt.mlirBlockCreate(blockArgTypes, blockArgLocs)
-              circt.mlirRegionAppendOwnedBlock(region, block)
-              block
-            }
-          }
-
-          (regions :+ region, regionsResult :+ Region(region, blocksResult))
-        }
-      }
-
-      val state = circt.mlirOperationStateGet(opName, loc)
-
-      circt.mlirOperationStateAddAttributes(state, attrs)
-      circt.mlirOperationStateAddOperands(state, operands)
-      circt.mlirOperationStateAddResults(state, results)
-      circt.mlirOperationStateAddOwnedRegions(state, regions)
-
-      val op = circt.mlirOperationCreate(state)
-      circt.mlirBlockAppendOwnedOperation(parent, op)
-
-      OpWithBody(state, op, regionsResult)
     }
 
     // got port index inside module
@@ -303,27 +288,25 @@ class PanamaCIRCTConverter extends CIRCTConverter {
             case SubField(index, firData) =>
               val tpe = Converter.extractType(firData, null)
               (
-                buildOp(
-                  parentBlock(),
-                  "firrtl.subfield",
-                  Seq(circt.mlirNamedAttributeGet("fieldIndex", circt.mlirIntegerAttrGet(indexType, index))),
-                  Seq(parent),
-                  Seq(util.convert(tpe)),
-                  circt.unkLoc
-                ).results(0),
+                util
+                  .OpBuilder("firrtl.subfield", parentBlock, circt.unkLoc)
+                  .withNamedAttr("fieldIndex", circt.mlirIntegerAttrGet(indexType, index))
+                  .withOperand(parent)
+                  .withResult(util.convert(tpe))
+                  .build()
+                  .results(0),
                 tpe
               )
             case SubIndex(index, firData) =>
               val tpe = Converter.extractType(firData, null)
               (
-                buildOp(
-                  parentBlock(),
-                  "firrtl.subindex",
-                  Seq(circt.mlirNamedAttributeGet("index", circt.mlirIntegerAttrGet(indexType, index))),
-                  Seq(parent),
-                  Seq(util.convert(tpe)),
-                  circt.unkLoc
-                ).results(0),
+                util
+                  .OpBuilder("firrtl.subindex", parentBlock, circt.unkLoc)
+                  .withNamedAttr("index", circt.mlirIntegerAttrGet(indexType, index))
+                  .withOperand(parent)
+                  .withResult(util.convert(tpe))
+                  .build()
+                  .results(0),
                 tpe
               )
           }
@@ -382,23 +365,15 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       resultType: fir.Type,
       input:      MlirValue
     ): Unit = {
-      val op = buildOp(
-        parentBlock(),
-        "firrtl.node",
-        Seq(
-          circt.mlirNamedAttributeGet("name", circt.mlirStringAttrGet(name)),
-          circt.mlirNamedAttributeGet("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName)),
-          circt.mlirNamedAttributeGet("annotations", circt.emptyArrayAttr)
-          // attr: inner_sym
-          // attr: forceable
-        ),
-        Seq(input),
-        Seq(
-          /* result */ util.convert(resultType)
-          /* ref */
-        ),
-        circt.unkLoc
-      )
+      val op = util
+        .OpBuilder("firrtl.node", parentBlock, circt.unkLoc)
+        .withNamedAttr("name", circt.mlirStringAttrGet(name))
+        .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+        .withNamedAttr("annotations", circt.emptyArrayAttr)
+        .withOperand(input)
+        .withResult(util.convert(resultType))
+        // .withResult( /* ref */ )
+        .build()
       moduleItems += ((id, op.results(0)))
     }
   }
@@ -412,18 +387,12 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitCircuit(name: String): Unit = {
-    circuit = util.buildOpWithBody(
-      moduleBody,
-      Seq(Seq((Seq.empty, Seq.empty))),
-      "firrtl.circuit",
-      Seq(
-        circt.mlirNamedAttributeGet("name", circt.mlirStringAttrGet(name)),
-        circt.mlirNamedAttributeGet("annotations", circt.emptyArrayAttr)
-      ),
-      Seq.empty,
-      Seq.empty,
-      circt.unkLoc
-    )
+    circuit = util
+      .OpBuilder("firrtl.circuit", moduleBody, circt.unkLoc)
+      .withRegion(Seq((Seq.empty, Seq.empty)))
+      .withNamedAttr("name", circt.mlirStringAttrGet(name))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .build()
   }
 
   // TODO: refactor me
@@ -445,51 +414,30 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     val portsLocs = ports.map(_ => circt.unkLoc)
     val portsAnnotationsAttrs = ports.map(_ => circt.emptyArrayAttr)
 
-    firModule = util.buildOpWithBody(
-      circuit.region(0).block(0),
-      Seq(Seq((portsTypes, portsLocs))),
-      "firrtl.module",
-      Seq(
-        circt.mlirNamedAttributeGet("sym_name", circt.mlirStringAttrGet(defModule.name)),
-        circt.mlirNamedAttributeGet(
-          "portDirections",
-          circt.firrtlAttrGetPortDirs(
-            ports.map(_.direction match {
-              case fir.Input  => FIRRTLPortDir.Input
-              case fir.Output => FIRRTLPortDir.Output
-            })
-          )
-        ),
-        circt.mlirNamedAttributeGet(
-          "portNames",
-          circt.mlirArrayAttrGet(ports.map(port => circt.mlirStringAttrGet(port.name)))
-        ),
-        circt.mlirNamedAttributeGet(
-          "portTypes",
-          circt.mlirArrayAttrGet(portsTypeAttrs)
-        ),
-        circt.mlirNamedAttributeGet(
-          "portAnnotations",
-          circt.mlirArrayAttrGet(portsAnnotationsAttrs)
-        ),
-        circt.mlirNamedAttributeGet(
-          "portSyms",
-          circt.emptyArrayAttr
-        ),
-        circt.mlirNamedAttributeGet(
-          "portLocations",
-          // TODO: figure out the relationship between `MlirAttribute` and `MlirLocation`
-          circt.mlirArrayAttrGet(portsLocs.map(loc => MlirAttribute(loc.ptr)))
-        ),
-        circt.mlirNamedAttributeGet(
-          "annotations",
-          circt.emptyArrayAttr
+    firModule = util
+      .OpBuilder("firrtl.module", circuit.region(0).block(0), circt.unkLoc)
+      .withRegion(Seq((portsTypes, portsLocs)))
+      .withNamedAttr("sym_name", circt.mlirStringAttrGet(defModule.name))
+      .withNamedAttr(
+        "portDirections",
+        circt.firrtlAttrGetPortDirs(
+          ports.map(_.direction match {
+            case fir.Input  => FIRRTLPortDir.Input
+            case fir.Output => FIRRTLPortDir.Output
+          })
         )
-      ),
-      Seq.empty,
-      Seq.empty,
-      circt.unkLoc
-    )
+      )
+      .withNamedAttr("portNames", circt.mlirArrayAttrGet(ports.map(port => circt.mlirStringAttrGet(port.name))))
+      .withNamedAttr("portTypes", circt.mlirArrayAttrGet(portsTypeAttrs))
+      .withNamedAttr("portAnnotations", circt.mlirArrayAttrGet(portsAnnotationsAttrs))
+      .withNamedAttr("portSyms", circt.emptyArrayAttr)
+      .withNamedAttr(
+        "portLocations",
+        // TODO: figure out the relationship between `MlirAttribute` and `MlirLocation`
+        circt.mlirArrayAttrGet(portsLocs.map(loc => MlirAttribute(loc.ptr)))
+      )
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .build()
   }
 
   def visitAltBegin(altBegin: AltBegin): Unit = {
@@ -497,49 +445,30 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitAttach(attach: Attach): Unit = {
-    util.buildOp(
-      util.parentBlock(),
-      "firrtl.attach",
-      Seq.empty,
-      attach.locs.map(loc => util.createReference(loc.id)),
-      Seq.empty,
-      circt.unkLoc
-    )
+    util
+      .OpBuilder("firrtl.attach", util.parentBlock, circt.unkLoc)
+      .withOperands(attach.locs.map(loc => util.createReference(loc.id)))
+      .build()
   }
 
   def visitConnect(connect: Connect): Unit = {
-    util.buildOp(
-      util.parentBlock(),
-      "firrtl.connect",
-      Seq.empty,
-      Seq(
-        /* dest */ util.createReference(connect.loc.id),
-        /* src */ util.createReferenceWithTypeFromArg(connect.exp)._1
-      ),
-      Seq.empty,
-      circt.unkLoc
-    )
+    util
+      .OpBuilder("firrtl.connect", util.parentBlock, circt.unkLoc)
+      .withOperand( /* dest */ util.createReference(connect.loc.id))
+      .withOperand( /* src */ util.createReferenceWithTypeFromArg(connect.exp)._1)
+      .build()
   }
 
   def visitDefWire(defWire: DefWire): Unit = {
     val wireName = Converter.getRef(defWire.id, defWire.sourceInfo).name
-    val op = util.buildOp(
-      util.parentBlock(),
-      "firrtl.wire",
-      Seq(
-        circt.mlirNamedAttributeGet("name", circt.mlirStringAttrGet(wireName)),
-        circt.mlirNamedAttributeGet("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName)),
-        circt.mlirNamedAttributeGet("annotations", circt.emptyArrayAttr)
-        // attr: inner_sym
-        // attr: forceable
-      ),
-      Seq.empty,
-      Seq(
-        /* result */ util.convert(Converter.extractType(defWire.id, defWire.sourceInfo))
-        /* ref */
-      ),
-      circt.unkLoc
-    )
+    val op = util
+      .OpBuilder("firrtl.wire", util.parentBlock, circt.unkLoc)
+      .withNamedAttr("name", circt.mlirStringAttrGet(wireName))
+      .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withResult(util.convert(Converter.extractType(defWire.id, defWire.sourceInfo)))
+      // .withResult( /* ref */ )
+      .build()
     moduleItems += ((defWire.id._id, op.results(0)))
   }
 
@@ -547,27 +476,16 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     val (dest, destType) = util.createReferenceWithTypeFromArg(defInvalid.arg)
 
     val invalidValue = util
-      .buildOp(
-        util.parentBlock(),
-        "firrtl.invalidvalue",
-        Seq.empty,
-        Seq.empty,
-        Seq(util.convert(destType)),
-        circt.unkLoc
-      )
+      .OpBuilder("firrtl.invalidvalue", util.parentBlock, circt.unkLoc)
+      .withResult(util.convert(destType))
+      .build()
       .results(0)
 
-    util.buildOp(
-      util.parentBlock(),
-      "firrtl.connect",
-      Seq.empty,
-      Seq(
-        /* dest */ dest,
-        /* src */ invalidValue
-      ),
-      Seq.empty,
-      circt.unkLoc
-    )
+    util
+      .OpBuilder("firrtl.connect", util.parentBlock, circt.unkLoc)
+      .withOperand( /* dest */ dest)
+      .withOperand( /* src */ invalidValue)
+      .build()
   }
 
   def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd): Unit = {
@@ -577,22 +495,12 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   def visitWhenBegin(whenBegin: WhenBegin): Unit = {
     val cond = util.createReferenceWithTypeFromArg(whenBegin.pred)
 
-    val op = util.buildOpWithBody(
-      util.parentBlock(),
-      Seq(
-        // then region
-        Seq((Seq.empty, Seq.empty)),
-        // else region
-        Seq((Seq.empty, Seq.empty))
-      ),
-      "firrtl.when",
-      Seq.empty,
-      Seq(
-        /* condition */ cond._1
-      ),
-      Seq.empty,
-      circt.unkLoc
-    )
+    val op = util
+      .OpBuilder("firrtl.when", util.parentBlock, circt.unkLoc)
+      .withRegion( /* then */ Seq((Seq.empty, Seq.empty)))
+      .withRegion( /* else */ Seq((Seq.empty, Seq.empty)))
+      .withOperand( /* condition */ cond._1)
+      .build()
 
     whenCtx.push(WhenContext(op, false))
   }
@@ -607,120 +515,75 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   def visitDefSeqMemory(defSeqMemory: DefSeqMemory): Unit = {
     val name = Converter.getRef(defSeqMemory.id, defSeqMemory.sourceInfo).name
 
-    val op = util.buildOp(
-      util.parentBlock(),
-      "chirrtl.seqmem",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "ruw",
-          circt.firrtlAttrGetRUW(
-            defSeqMemory.readUnderWrite match {
-              case fir.ReadUnderWrite.Undefined => firrtlAttrGetRUW.Undefined
-              case fir.ReadUnderWrite.Old       => firrtlAttrGetRUW.Old
-              case fir.ReadUnderWrite.New       => firrtlAttrGetRUW.New
-            }
-          )
-        ),
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(name)
-        ),
-        circt.mlirNamedAttributeGet("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName)),
-        circt.mlirNamedAttributeGet(
-          "annotations",
-          circt.emptyArrayAttr
+    val op = util
+      .OpBuilder("chirrtl.seqmem", util.parentBlock, circt.unkLoc)
+      .withNamedAttr(
+        "ruw",
+        circt.firrtlAttrGetRUW(
+          defSeqMemory.readUnderWrite match {
+            case fir.ReadUnderWrite.Undefined => firrtlAttrGetRUW.Undefined
+            case fir.ReadUnderWrite.Old       => firrtlAttrGetRUW.Old
+            case fir.ReadUnderWrite.New       => firrtlAttrGetRUW.New
+          }
         )
-        // attr: inner_sym
-        // init
-      ),
-      Seq.empty,
-      Seq(
-        /* result */ circt.chirrtlTypeGetCMemory(
+      )
+      .withNamedAttr("name", circt.mlirStringAttrGet(name))
+      .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withResult(
+        circt.chirrtlTypeGetCMemory(
           util.convert(Converter.extractType(defSeqMemory.t, defSeqMemory.sourceInfo)),
           defSeqMemory.size.intValue
         )
-      ),
-      circt.unkLoc
-    )
+      )
+      .build()
     moduleItems += ((defSeqMemory.t._id, op.results(0)))
   }
 
   def visitDefMemPort[T <: Data](defMemPort: DefMemPort[T]): Unit = {
-    val op = util.buildOp(
-      util.parentBlock(),
-      "chirrtl.memoryport",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "direction",
-          circt.firrtlAttrGetMemDir(
-            defMemPort.dir match {
-              case MemPortDirection.READ  => FIRRTLMemDir.Read
-              case MemPortDirection.WRITE => FIRRTLMemDir.Write
-              case MemPortDirection.RDWR  => FIRRTLMemDir.ReadWrite
-              case MemPortDirection.INFER => FIRRTLMemDir.Infer
-            }
-          )
-        ),
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(defMemPort.id, defMemPort.sourceInfo).name)
-        ),
-        circt.mlirNamedAttributeGet(
-          "annotations",
-          circt.emptyArrayAttr
+    val op = util
+      .OpBuilder("chirrtl.memoryport", util.parentBlock, circt.unkLoc)
+      .withNamedAttr(
+        "direction",
+        circt.firrtlAttrGetMemDir(
+          defMemPort.dir match {
+            case MemPortDirection.READ  => FIRRTLMemDir.Read
+            case MemPortDirection.WRITE => FIRRTLMemDir.Write
+            case MemPortDirection.RDWR  => FIRRTLMemDir.ReadWrite
+            case MemPortDirection.INFER => FIRRTLMemDir.Infer
+          }
         )
-      ),
-      Seq(
-        /* memory */ util.createReference(defMemPort.source.id)
-      ),
-      Seq(
-        /* data */ util.convert(Converter.extractType(defMemPort.id, defMemPort.sourceInfo)),
-        /* port */ circt.chirrtlTypeGetCMemoryPort()
-      ),
-      circt.unkLoc
-    )
+      )
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defMemPort.id, defMemPort.sourceInfo).name))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withOperand( /* memory */ util.createReference(defMemPort.source.id))
+      .withResult( /* data */ util.convert(Converter.extractType(defMemPort.id, defMemPort.sourceInfo)))
+      .withResult( /* port */ circt.chirrtlTypeGetCMemoryPort())
+      .build()
 
-    util.buildOp(
-      util.parentBlock(),
-      "chirrtl.memoryport.access",
-      Seq.empty,
-      Seq(
-        /* port */ op.results(1),
-        /* index */ util.createReferenceWithTypeFromArg(defMemPort.index)._1,
-        /* clock */ util.createReferenceWithTypeFromArg(defMemPort.clock)._1
-      ),
-      Seq.empty,
-      circt.unkLoc
-    )
+    util
+      .OpBuilder("chirrtl.memoryport.access", util.parentBlock, circt.unkLoc)
+      .withOperand( /* port */ op.results(1))
+      .withOperand( /* index */ util.createReferenceWithTypeFromArg(defMemPort.index)._1)
+      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(defMemPort.clock)._1)
+      .build()
+
     moduleItems += ((defMemPort.id._id, op.results(0)))
   }
 
   def visitDefMemory(defMemory: DefMemory): Unit = {
-    val op = util.buildOp(
-      util.parentBlock(),
-      "chirrtl.combmem",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(defMemory.id, defMemory.sourceInfo).name)
-        ),
-        circt.mlirNamedAttributeGet("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName)),
-        circt.mlirNamedAttributeGet(
-          "annotations",
-          circt.emptyArrayAttr
-        )
-        // attr: inner_sym
-        // init
-      ),
-      Seq.empty,
-      Seq(
-        /* result */ circt.chirrtlTypeGetCMemory(
+    val op = util
+      .OpBuilder("chirrtl.combmem", util.parentBlock, circt.unkLoc)
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defMemory.id, defMemory.sourceInfo).name))
+      .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withResult(
+        circt.chirrtlTypeGetCMemory(
           util.convert(Converter.extractType(defMemory.t, defMemory.sourceInfo)),
           defMemory.size.intValue
         )
-      ),
-      circt.unkLoc
-    )
+      )
+      .build()
     moduleItems += ((defMemory.t._id, op.results(0)))
   }
 
@@ -769,10 +632,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case fir.UIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
         }
         val attrs = Seq(
-          circt.mlirNamedAttributeGet(
-            "amount",
-            circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)
-          )
+          ("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount))
         )
         (attrs, Seq(input), fir.UIntType(fir.IntWidth(width)))
 
@@ -789,10 +649,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case fir.UIntType(_) => amount
         }
         val attrs = Seq(
-          circt.mlirNamedAttributeGet(
-            "amount",
-            circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)
-          )
+          ("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount))
         )
         (attrs, Seq(input), fir.UIntType(fir.IntWidth(width)))
 
@@ -848,10 +705,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case fir.UIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.UIntType)
         }
         val attrs = Seq(
-          circt.mlirNamedAttributeGet(
-            "amount",
-            circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)
-          )
+          ("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount))
         )
         (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
 
@@ -868,10 +722,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case fir.UIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.UIntType)
         }
         val attrs = Seq(
-          circt.mlirNamedAttributeGet(
-            "amount",
-            circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)
-          )
+          ("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount))
         )
         (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
 
@@ -954,11 +805,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         val width = hi - lo + 1
         val intType = circt.mlirIntegerTypeGet(32)
         val attrs = Seq(
-          circt.mlirNamedAttributeGet(
-            "hi",
-            circt.mlirIntegerAttrGet(intType, hi)
-          ),
-          circt.mlirNamedAttributeGet(
+          ("hi", circt.mlirIntegerAttrGet(intType, hi)),
+          (
             "lo",
             circt.mlirIntegerAttrGet(intType, lo)
           )
@@ -988,7 +836,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case fir.UIntType(fir.IntWidth(inputWidth)) => (max(inputWidth.toInt, amount), fir.UIntType)
         }
         val attrs = Seq(
-          circt.mlirNamedAttributeGet(
+          (
             "amount",
             circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)
           )
@@ -1078,130 +926,73 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       case _ => throw new Exception(s"defPrim: $defPrim")
     }
 
-    val op = util.buildOp(
-      util.parentBlock(),
-      s"firrtl.${defPrim.op.toString}",
-      attrs,
-      operands.map(_._1),
-      Seq(util.convert(resultType)),
-      circt.unkLoc
-    )
+    val op = util
+      .OpBuilder(s"firrtl.${defPrim.op.toString}", util.parentBlock, circt.unkLoc)
+      .withNamedAttrs(attrs)
+      .withOperands(operands.map(_._1))
+      .withResult(util.convert(resultType))
+      .build()
     util.createNode(defPrim.id._id, name, resultType, op.results(0))
   }
 
   def visitDefReg(defReg: DefReg): Unit = {
-    val op = util.buildOp(
-      util.parentBlock(),
-      "firrtl.reg",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(defReg.id, defReg.sourceInfo).name)
-        ),
-        circt.mlirNamedAttributeGet("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName)),
-        circt.mlirNamedAttributeGet(
-          "annotations",
-          circt.emptyArrayAttr
-        )
-        // inner_sym
-        // forceable
-      ),
-      Seq(
-        /* clockVal */ util.createReferenceWithTypeFromArg(defReg.clock)._1
-      ),
-      Seq(
-        /* result */ util.convert(Converter.extractType(defReg.id, defReg.sourceInfo))
-        /* ref */
-      ),
-      circt.unkLoc
-    )
+    val op = util
+      .OpBuilder("firrtl.reg", util.parentBlock, circt.unkLoc)
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defReg.id, defReg.sourceInfo).name))
+      .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withOperand( /* clockVal */ util.createReferenceWithTypeFromArg(defReg.clock)._1)
+      .withResult( /* result */ util.convert(Converter.extractType(defReg.id, defReg.sourceInfo)))
+      .build()
     moduleItems += ((defReg.id._id, op.results(0)))
   }
 
   def visitDefRegInit(defRegInit: DefRegInit): Unit = {
-    val op = util.buildOp(
-      util.parentBlock(),
-      "firrtl.regreset",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(defRegInit.id, defRegInit.sourceInfo).name)
-        ),
-        circt.mlirNamedAttributeGet("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName)),
-        circt.mlirNamedAttributeGet(
-          "annotations",
-          circt.emptyArrayAttr
-        )
-        // inner_sym
-        // forceable
-      ),
-      Seq(
-        /* clockVal */ util.createReferenceWithTypeFromArg(defRegInit.clock)._1,
-        /* reset */ util.createReferenceWithTypeFromArg(defRegInit.reset)._1,
-        /* init */ util.createReferenceWithTypeFromArg(defRegInit.init)._1
-      ),
-      Seq(
-        /* result */ util.convert(Converter.extractType(defRegInit.id, defRegInit.sourceInfo))
-        /* ref */
-      ),
-      circt.unkLoc
-    )
+    val op = util
+      .OpBuilder("firrtl.regreset", util.parentBlock, circt.unkLoc)
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defRegInit.id, defRegInit.sourceInfo).name))
+      .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withOperand( /* clockVal */ util.createReferenceWithTypeFromArg(defRegInit.clock)._1)
+      .withOperand( /* reset */ util.createReferenceWithTypeFromArg(defRegInit.reset)._1)
+      .withOperand( /* init */ util.createReferenceWithTypeFromArg(defRegInit.init)._1)
+      .withResult( /* result */ util.convert(Converter.extractType(defRegInit.id, defRegInit.sourceInfo)))
+      .build()
     moduleItems += ((defRegInit.id._id, op.results(0)))
   }
 
   def visitPrintf(parent: Component, printf: Printf): Unit = {
     val (fmt, args) = Converter.unpack(printf.pable, parent)
-    util.buildOp(
-      util.parentBlock(),
-      "firrtl.printf",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "formatString",
-          circt.mlirStringAttrGet(fmt)
-        ),
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(printf.id, printf.sourceInfo).name)
-        )
-      ),
-      Seq(
-        /* clock */ util.createReferenceWithTypeFromArg(printf.clock)._1,
+    util
+      .OpBuilder("firrtl.printf", util.parentBlock, circt.unkLoc)
+      .withNamedAttr("formatString", circt.mlirStringAttrGet(fmt))
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(printf.id, printf.sourceInfo).name))
+      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(printf.clock)._1)
+      .withOperand(
         /* cond */ util.newConstantValue(
           fir.UIntType(fir.IntWidth(1)),
           circt.mlirIntegerTypeUnsignedGet(1),
           1
         )
-      ) ++ /* substitutions */ args.map(util.createReferenceWithTypeFromArg(_)._1),
-      Seq.empty,
-      circt.unkLoc
-    )
+      )
+      .withOperands( /* substitutions */ args.map(util.createReferenceWithTypeFromArg(_)._1))
+      .build()
   }
 
   def visitStop(stop: Stop): Unit = {
-    util.buildOp(
-      util.parentBlock(),
-      "firrtl.stop",
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "exitCode",
-          circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), stop.ret)
-        ),
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(stop.id, stop.sourceInfo).name)
-        )
-      ),
-      Seq(
-        /* clock */ util.createReferenceWithTypeFromArg(stop.clock)._1,
+    util
+      .OpBuilder("firrtl.stop", util.parentBlock, circt.unkLoc)
+      .withNamedAttr("exitCode", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), stop.ret))
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(stop.id, stop.sourceInfo).name))
+      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(stop.clock)._1)
+      .withOperand(
         /* cond */ util.newConstantValue(
           fir.UIntType(fir.IntWidth(1)),
           circt.mlirIntegerTypeUnsignedGet(1),
           1
         )
-      ),
-      Seq.empty,
-      circt.unkLoc
-    )
+      )
+      .build()
   }
 
   def visitVerification[T <: chisel3.VerificationStatement](
@@ -1209,33 +1000,21 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     opName: String,
     args:   Seq[Arg]
   ): Unit = {
-    util.buildOp(
-      util.parentBlock(),
-      opName,
-      Seq(
-        circt.mlirNamedAttributeGet(
-          "message",
-          circt.mlirStringAttrGet(verifi.message)
-        ),
-        circt.mlirNamedAttributeGet(
-          "name",
-          circt.mlirStringAttrGet(Converter.getRef(verifi.id, verifi.sourceInfo).name)
-        )
-        /* isConcurrent */ // TODO
-        /* eventControl */ // TODO
-      ),
-      Seq(
-        /* clock */ util.createReferenceWithTypeFromArg(verifi.clock)._1,
-        /* predicate */ util.createReferenceWithTypeFromArg(verifi.predicate)._1,
+    util
+      .OpBuilder(opName, util.parentBlock, circt.unkLoc)
+      .withNamedAttr("message", circt.mlirStringAttrGet(verifi.message))
+      .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(verifi.id, verifi.sourceInfo).name))
+      .withOperand( /* clock */ util.createReferenceWithTypeFromArg(verifi.clock)._1)
+      .withOperand( /* predicate */ util.createReferenceWithTypeFromArg(verifi.predicate)._1)
+      .withOperand(
         /* enable */ util.newConstantValue(
           fir.UIntType(fir.IntWidth(1)),
           circt.mlirIntegerTypeUnsignedGet(1),
           1
         )
-      ) ++ /* substitutions */ args.map(util.createReferenceWithTypeFromArg(_)._1),
-      Seq.empty,
-      circt.unkLoc
-    )
+      )
+      .withOperands( /* substitutions */ args.map(util.createReferenceWithTypeFromArg(_)._1))
+      .build()
   }
 
   def visitAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
