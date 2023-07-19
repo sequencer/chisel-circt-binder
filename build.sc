@@ -253,7 +253,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
         "-l", "CIRCTExportFIRRTL",
         "-l", "CIRCTExportVerilog",
         "-l", "MLIRCAPIRegisterEverything",
-        "--header-class-name", "c_api",
+        "--header-class-name", "CAPI",
         "--source",
         "--output", T.dest.toString
       ) ++ includeFunctions().flatMap(f => Seq("--include-function", f)) ++
