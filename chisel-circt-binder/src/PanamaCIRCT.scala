@@ -48,31 +48,17 @@ class PanamaCIRCT {
     MlirStringRef(CAPI.mlirStringRefCreateFromCString(arena, buffer))
   }
 
-  // TODO: dedup us
-
-  private def seqToArrayMemorySegment(xs: Seq[ForeignType[MemorySegment]]): (MemorySegment, Int) = {
+  private def seqToArray[T <: ForeignType[_]](xs: Seq[T]): (MemorySegment, Int) = {
     if (xs.nonEmpty) {
-      // TODO: We should access the `sizeof` in the way of `T.sizeof`
       val sizeOfT = xs(0).sizeof
 
       val buffer = MemorySegment.allocateNative(sizeOfT * xs.length, arena.scope())
       xs.zipWithIndex.foreach {
-        case (x, i) => buffer.asSlice(sizeOfT * i, sizeOfT).copyFrom(x.get)
-      }
-      (buffer, xs.length)
-    } else {
-      (NULL, 0)
-    }
-  }
-
-  private def seqToArrayInt(xs: Seq[ForeignType[Int]]): (MemorySegment, Int) = {
-    if (xs.nonEmpty) {
-      // TODO: We should access the `sizeof` in the way of `T.sizeof`
-      val sizeOfT = xs(0).sizeof
-
-      val buffer = MemorySegment.allocateNative(sizeOfT * xs.length, arena.scope())
-      xs.zipWithIndex.foreach {
-        case (x, i) => buffer.setAtIndex(CAPI.C_INT, i, x.get)
+        case (x, i) =>
+          x.get match {
+            case value: MemorySegment => buffer.asSlice(sizeOfT * i, sizeOfT).copyFrom(value)
+            case value: Int           => buffer.setAtIndex(CAPI.C_INT, i, value)
+          }
       }
       (buffer, xs.length)
     } else {
@@ -96,28 +82,28 @@ class PanamaCIRCT {
 
   def mlirOperationStateAddAttributes(state: MlirOperationState, attrs: Seq[MlirNamedAttribute]) = {
     if (attrs.nonEmpty) {
-      val (ptr, length) = seqToArrayMemorySegment(attrs)
+      val (ptr, length) = seqToArray(attrs)
       CAPI.mlirOperationStateAddAttributes(state.get, length, ptr)
     }
   }
 
   def mlirOperationStateAddOperands(state: MlirOperationState, operands: Seq[MlirValue]) = {
     if (operands.nonEmpty) {
-      val (ptr, length) = seqToArrayMemorySegment(operands)
+      val (ptr, length) = seqToArray(operands)
       CAPI.mlirOperationStateAddOperands(state.get, length, ptr)
     }
   }
 
   def mlirOperationStateAddResults(state: MlirOperationState, results: Seq[MlirType]) = {
     if (results.nonEmpty) {
-      val (ptr, length) = seqToArrayMemorySegment(results)
+      val (ptr, length) = seqToArray(results)
       CAPI.mlirOperationStateAddResults(state.get, length, ptr)
     }
   }
 
   def mlirOperationStateAddOwnedRegions(state: MlirOperationState, regions: Seq[MlirRegion]) = {
     if (regions.nonEmpty) {
-      val (ptr, length) = seqToArrayMemorySegment(regions)
+      val (ptr, length) = seqToArray(regions)
       CAPI.mlirOperationStateAddOwnedRegions(state.get, length, ptr)
     }
   }
@@ -131,7 +117,7 @@ class PanamaCIRCT {
   def mlirBlockCreate(args: Seq[MlirType], locs: Seq[MlirLocation]): MlirBlock = {
     assert(args.length == locs.length)
     val length = args.length
-    MlirBlock(CAPI.mlirBlockCreate(arena, length, seqToArrayMemorySegment(args)._1, seqToArrayMemorySegment(locs)._1))
+    MlirBlock(CAPI.mlirBlockCreate(arena, length, seqToArray(args)._1, seqToArray(locs)._1))
   }
 
   def mlirBlockGetArgument(block: MlirBlock, pos: Int) = MlirValue(CAPI.mlirBlockGetArgument(arena, block.get, pos))
@@ -155,7 +141,7 @@ class PanamaCIRCT {
   )
 
   def mlirArrayAttrGet(elements: Seq[MlirAttribute]): MlirAttribute = {
-    val (ptr, length) = seqToArrayMemorySegment(elements)
+    val (ptr, length) = seqToArray(elements)
     MlirAttribute(CAPI.mlirArrayAttrGet(arena, mlirCtx, length, ptr))
   }
 
@@ -212,7 +198,7 @@ class PanamaCIRCT {
   }
 
   def firrtlAttrGetPortDirs(dirs: Seq[FIRRTLPortDir]) = {
-    val (ptr, length) = seqToArrayInt(dirs)
+    val (ptr, length) = seqToArray(dirs)
     MlirAttribute(CAPI.firrtlAttrGetPortDirs(arena, mlirCtx, length, ptr))
   }
 
@@ -243,64 +229,62 @@ trait ForeignType[T] {
   private[circt] val sizeof: Int
 }
 
-// TODO: Make the `ctor` and `ptr` private to outside!
-
-case class MlirAttribute(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirAttribute(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirAttribute.sizeof().toInt
 }
 
-case class MlirNamedAttribute(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirNamedAttribute(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirNamedAttribute.sizeof().toInt
 }
 
-case class MlirBlock(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirBlock(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirBlock.sizeof().toInt
 }
 
-case class MlirRegion(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirRegion(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirRegion.sizeof().toInt
 }
 
-case class MlirIdentifier(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirIdentifier(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirIdentifier.sizeof().toInt
 }
 
-case class MlirLocation(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirLocation(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirLocation.sizeof().toInt
 }
 
-case class MlirModule(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirModule(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirModule.sizeof().toInt
 }
 
-case class MlirOperation(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirOperation(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirOperation.sizeof().toInt
 }
 
-case class MlirOperationState(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirOperationState(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirOperationState.sizeof().toInt
 }
 
-case class MlirType(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirType(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirType.sizeof().toInt
 }
 
-case class MlirValue(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirValue(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirValue.sizeof().toInt
 }
 
-case class MlirStringRef(ptr: MemorySegment) extends ForeignType[MemorySegment] {
+sealed case class MlirStringRef(ptr: MemorySegment) extends ForeignType[MemorySegment] {
   private[circt] def get = ptr
   private[circt] val sizeof = circt.MlirStringRef.sizeof().toInt
 

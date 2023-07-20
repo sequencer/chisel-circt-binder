@@ -2,7 +2,7 @@
 
 package chisel3.internal
 
-import chisel3.Data
+import chisel3.{Data, VerificationStatement}
 import chisel3.internal.firrtl._
 
 abstract class CIRCTConverter {
@@ -26,7 +26,7 @@ abstract class CIRCTConverter {
   def visitDefRegInit(defRegInit:            DefRegInit): Unit
   def visitPrintf(parent:                    Component, printf: Printf): Unit
   def visitStop(stop:                        Stop):          Unit
-  def visitVerification[T <: chisel3.VerificationStatement](
+  def visitVerification[T <: VerificationStatement](
     verifi: Verification[T],
     opName: String,
     args:   Seq[Arg]
