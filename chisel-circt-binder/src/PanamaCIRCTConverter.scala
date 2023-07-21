@@ -105,10 +105,10 @@ class FirContext {
     opModule = newModule
   }
 
-  def enterWhenBegin(whenOp: Op): Unit = whenStack.push(WhenContext(whenOp, false))
-  def enterWhenAlt():       Unit = whenStack.top.inAlt = true
-  def leaveWhenOtherwise(): Unit = whenStack.top.inAlt = true // but why..?
-  def leaveWhen():          Unit = if (whenStack.top.inAlt) whenStack.top.inAlt = false else whenStack.pop
+  def enterWhen(whenOp: Op): Unit = whenStack.push(WhenContext(whenOp, false))
+  def enterAlt(): Unit = whenStack.top.inAlt = true
+  def leaveOtherwise(depth: Int): Unit = (1 to depth).foreach(_ => whenStack.pop)
+  def leaveWhen(depth:      Int, hasAlt: Boolean): Unit = if (!hasAlt) (0 to depth).foreach(_ => whenStack.pop)
 
   def circuitBlock: MlirBlock = opCircuit.region(0).block(0)
   def moduleBlock:  MlirBlock = opModule.region(0).block(0)
@@ -419,7 +419,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitAltBegin(altBegin: AltBegin): Unit = {
-    firCtx.enterWhenAlt()
+    firCtx.enterAlt()
   }
 
   def visitAttach(attach: Attach): Unit = {
@@ -467,7 +467,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitOtherwiseEnd(otherwiseEnd: OtherwiseEnd): Unit = {
-    firCtx.leaveWhenOtherwise()
+    firCtx.leaveOtherwise(otherwiseEnd.firrtlDepth)
   }
 
   def visitWhenBegin(whenBegin: WhenBegin): Unit = {
@@ -480,11 +480,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .withOperand( /* condition */ cond.value)
       .build()
 
-    firCtx.enterWhenBegin(op)
+    firCtx.enterWhen(op)
   }
 
   def visitWhenEnd(whenEnd: WhenEnd): Unit = {
-    firCtx.leaveWhen()
+    firCtx.leaveWhen(whenEnd.firrtlDepth, whenEnd.hasAlt)
   }
 
   def visitDefSeqMemory(defSeqMemory: DefSeqMemory): Unit = {
@@ -993,34 +993,37 @@ private[chisel3] object PanamaCIRCTConverter {
   }
   def visitDefModule(defModule: DefModule)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitDefModule(defModule)
-    defModule.commands.foreach {
-      // Command
-      case altBegin:     AltBegin     => visitAltBegin(altBegin)
-      case attach:       Attach       => visitAttach(attach)
-      case connect:      Connect      => visitConnect(connect)
-      case connectInit:  ConnectInit  => visitConnectInit(connectInit)
-      case defInvalid:   DefInvalid   => visitDefInvalid(defInvalid)
-      case otherwiseEnd: OtherwiseEnd => visitOtherwiseEnd(otherwiseEnd)
-      case whenBegin:    WhenBegin    => visitWhenBegin(whenBegin)
-      case whenEnd:      WhenEnd      => visitWhenEnd(whenEnd)
+    defModule.commands.zip(defModule.commands.map(Some(_)).drop(1) :+ None).foreach {
+      case (cmd, nextCmd) =>
+        cmd match {
+          // Command
+          case altBegin:     AltBegin     => visitAltBegin(altBegin)
+          case attach:       Attach       => visitAttach(attach)
+          case connect:      Connect      => visitConnect(connect)
+          case connectInit:  ConnectInit  => visitConnectInit(connectInit)
+          case defInvalid:   DefInvalid   => visitDefInvalid(defInvalid)
+          case otherwiseEnd: OtherwiseEnd => visitOtherwiseEnd(otherwiseEnd)
+          case whenBegin:    WhenBegin    => visitWhenBegin(whenBegin)
+          case whenEnd:      WhenEnd      => visitWhenEnd(whenEnd, nextCmd)
 
-      // Definition
-      case defInstance:  DefInstance                         => visitDefInstance(defInstance)
-      case defMemPort:   DefMemPort[ChiselData]              => visitDefMemPort(defMemPort)
-      case defMemory:    DefMemory                           => visitDefMemory(defMemory)
-      case defPrim:      DefPrim[ChiselData]                 => visitDefPrim(defPrim)
-      case defReg:       DefReg                              => visitDefReg(defReg)
-      case defRegInit:   DefRegInit                          => visitDefRegInit(defRegInit)
-      case defSeqMemory: DefSeqMemory                        => visitDefSeqMemory(defSeqMemory)
-      case defWire:      DefWire                             => visitDefWire(defWire)
-      case printf:       Printf                              => visitPrintf(defModule, printf)
-      case stop:         Stop                                => visitStop(stop)
-      case assert:       Verification[chisel3.assert.Assert] => visitVerfiAssert(assert)
-      case assume:       Verification[chisel3.assume.Assume] => visitVerfiAssume(assume)
-      case cover:        Verification[chisel3.cover.Cover]   => visitVerfiCover(cover)
-      case printf:       Verification[chisel3.printf.Printf] => visitVerfiPrintf(printf)
-      case stop:         Verification[chisel3.stop.Stop]     => visitVerfiStop(stop)
-      case unhandled => throw new Exception(s"unhandled op: $unhandled")
+          // Definition
+          case defInstance:  DefInstance                         => visitDefInstance(defInstance)
+          case defMemPort:   DefMemPort[ChiselData]              => visitDefMemPort(defMemPort)
+          case defMemory:    DefMemory                           => visitDefMemory(defMemory)
+          case defPrim:      DefPrim[ChiselData]                 => visitDefPrim(defPrim)
+          case defReg:       DefReg                              => visitDefReg(defReg)
+          case defRegInit:   DefRegInit                          => visitDefRegInit(defRegInit)
+          case defSeqMemory: DefSeqMemory                        => visitDefSeqMemory(defSeqMemory)
+          case defWire:      DefWire                             => visitDefWire(defWire)
+          case printf:       Printf                              => visitPrintf(defModule, printf)
+          case stop:         Stop                                => visitStop(stop)
+          case assert:       Verification[chisel3.assert.Assert] => visitVerfiAssert(assert)
+          case assume:       Verification[chisel3.assume.Assume] => visitVerfiAssume(assume)
+          case cover:        Verification[chisel3.cover.Cover]   => visitVerfiCover(cover)
+          case printf:       Verification[chisel3.printf.Printf] => visitVerfiPrintf(printf)
+          case stop:         Verification[chisel3.stop.Stop]     => visitVerfiStop(stop)
+          case unhandled => throw new Exception(s"unhandled op: $unhandled")
+        }
     }
   }
   def visitAltBegin(altBegin: AltBegin)(implicit cvt: CIRCTConverter): Unit = {
@@ -1045,8 +1048,14 @@ private[chisel3] object PanamaCIRCTConverter {
   def visitWhenBegin(whenBegin: WhenBegin)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitWhenBegin(whenBegin)
   }
-  def visitWhenEnd(whenEnd: WhenEnd)(implicit cvt: CIRCTConverter): Unit = {
-    cvt.visitWhenEnd(whenEnd)
+  def visitWhenEnd(whenEnd: WhenEnd, next: Option[Command])(implicit cvt: CIRCTConverter): Unit = {
+    // FIXME: workaround https://github.com/chipsalliance/chisel/issues/3435
+    val hasAlt = next match {
+      case Some(_: AltBegin) => true
+      case _ => false
+    }
+    val whenEndPatched = WhenEnd(whenEnd.sourceInfo, whenEnd.firrtlDepth, hasAlt)
+    cvt.visitWhenEnd(whenEndPatched)
   }
   def visitDefInstance(defInstance: DefInstance)(implicit cvt: CIRCTConverter): Unit = {
     // TODO

@@ -192,6 +192,24 @@ object Smoke extends TestSuite {
     }
   }
 
+  class WhenModule extends Module {
+    val io = IO(new Bundle {
+      val enable = Input(Bool())
+      val write = Input(Bool())
+      val addr = Input(UInt(10.W))
+      val dataIn = Input(UInt(10.W))
+      val dataOut = Output(UInt(10.W))
+    })
+
+    when(io.enable) {
+      stop
+    }.elsewhen(io.enable) {
+      stop
+    }.otherwise {
+      stop
+    }
+  }
+
   val tests = Tests {
     test("cigarette") {
       Seq(
