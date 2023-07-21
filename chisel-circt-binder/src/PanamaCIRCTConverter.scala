@@ -5,38 +5,22 @@ package chisel3.internal.panama
 import chisel3.{Aggregate, Data => ChiselData, Element, Mem, SyncReadMem, Vec, VecLike}
 import chisel3.experimental.{BaseModule, NoSourceInfo, SourceInfo, SourceLine}
 import chisel3.internal.{
-  AggregateViewBinding,
-  BundleLitBinding,
   ChildBinding,
-  ConditionalDeclarable,
-  ConstrainedBinding,
-  CrossModuleBinding,
-  DontCareBinding,
-  ElementLitBinding,
+  HasId,
   LitBinding,
-  MemTypeBinding,
   MemoryPortBinding,
-  NamedComponent,
   OpBinding,
   PortBinding,
-  ReadOnlyBinding,
   RegBinding,
   SampleElementBinding,
   SecretPortBinding,
-  TopBinding,
-  UnconstrainedBinding,
-  VecLitBinding,
-  ViewBinding,
   WireBinding
 }
+import chisel3.internal.firrtl._
+import firrtl.{ir => fir}
 
 import scala.collection.mutable
 import scala.math._
-import chisel3.internal.firrtl._
-import chisel3.internal.HasId
-import firrtl.ir.HasName
-import firrtl.{ir => fir}
-import chisel3.SyncReadMem
 
 import chisel3.internal.CIRCTConverter
 import chisel3.internal.panama.circt._
@@ -115,9 +99,8 @@ class FirContext {
 
 class PanamaCIRCTConverter extends CIRCTConverter {
   val circt = new PanamaCIRCT
-
+  val firCtx = new FirContext
   val mlirRootModule = circt.mlirModuleCreateEmpty(circt.unkLoc)
-  var firCtx = new FirContext
 
   object util {
     def convert(firType: fir.Type): MlirType = {
