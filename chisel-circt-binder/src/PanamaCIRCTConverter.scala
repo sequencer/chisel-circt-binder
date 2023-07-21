@@ -3,7 +3,7 @@
 package chisel3.internal.panama
 
 import chisel3.{Aggregate, Data => ChiselData, Element, Mem, SyncReadMem, Vec, VecLike}
-import chisel3.experimental.{BaseModule, SourceInfo}
+import chisel3.experimental.{BaseModule, NoSourceInfo, SourceInfo, SourceLine}
 import chisel3.internal.{
   AggregateViewBinding,
   BundleLitBinding,
@@ -81,9 +81,7 @@ case class Refered(value: MlirValue, private var tpeOrData: FirTypeOrChiselData)
 }
 
 case class WhenContext(op: Op, var inAlt: Boolean) {
-  def block: MlirBlock = {
-    op.region(if (!inAlt) 0 else 1).block(0)
-  }
+  def block: MlirBlock = op.region(if (!inAlt) 0 else 1).block(0)
 }
 
 class FirContext {
@@ -149,6 +147,13 @@ class PanamaCIRCTConverter extends CIRCTConverter {
               )
             )
           )
+      }
+    }
+
+    def convert(sourceInfo: SourceInfo): MlirLocation = {
+      sourceInfo match {
+        case _: NoSourceInfo => circt.unkLoc
+        case SourceLine(filename, line, col) => circt.mlirLocationFileLineColGet(filename, line, col)
       }
     }
 
@@ -225,9 +230,9 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       }
     }
 
-    def newConstantValue(resultType: fir.Type, valueType: MlirType, value: Int): MlirValue = {
+    def newConstantValue(resultType: fir.Type, valueType: MlirType, value: Int, loc: MlirLocation): MlirValue = {
       util
-        .OpBuilder("firrtl.constant", firCtx.currentBlock, circt.unkLoc)
+        .OpBuilder("firrtl.constant", firCtx.currentBlock, loc)
         .withNamedAttr("value", circt.mlirIntegerAttrGet(valueType, value))
         .withResult(util.convert(resultType))
         .build()
@@ -288,7 +293,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       rec(id, Seq()).reverse // Reverse to make it root first
     }
 
-    def referTo(id: HasId): Refered = {
+    def referTo(id: HasId, loc: MlirLocation): Refered = {
       val indexType = circt.mlirIntegerTypeGet(32)
 
       val refChain = valueReferenceChain(id)
@@ -303,7 +308,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
               val tpe = Converter.extractType(data, null)
               Refered(
                 util
-                  .OpBuilder("firrtl.subfield", firCtx.currentBlock, circt.unkLoc)
+                  .OpBuilder("firrtl.subfield", firCtx.currentBlock, loc)
                   .withNamedAttr("fieldIndex", circt.mlirIntegerAttrGet(indexType, index))
                   .withOperand(parent.value)
                   .withResult(util.convert(tpe))
@@ -315,7 +320,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
               val tpe = Converter.extractType(data, null)
               Refered(
                 util
-                  .OpBuilder("firrtl.subindex", firCtx.currentBlock, circt.unkLoc)
+                  .OpBuilder("firrtl.subindex", firCtx.currentBlock, loc)
                   .withNamedAttr("index", circt.mlirIntegerAttrGet(indexType, index))
                   .withOperand(parent.value)
                   .withResult(util.convert(tpe))
@@ -328,7 +333,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       }
     }
 
-    def referTo(arg: Arg): Refered = {
+    def referTo(arg: Arg, loc: MlirLocation): Refered = {
       def referToNewConstant(n: Int, w: Width, isSigned: Boolean): Refered = {
         val (firWidth, valWidth) = w match {
           case _: UnknownWidth =>
@@ -339,20 +344,20 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         val resultType = if (isSigned) fir.SIntType(firWidth) else fir.UIntType(firWidth)
         val valueType =
           if (isSigned) circt.mlirIntegerTypeSignedGet(valWidth) else circt.mlirIntegerTypeUnsignedGet(valWidth)
-        Refered(util.newConstantValue(resultType, valueType, n.toInt), resultType)
+        Refered(util.newConstantValue(resultType, valueType, n.toInt, loc), resultType)
       }
 
       arg match {
-        case Node(id)           => referTo(id)
+        case Node(id)           => referTo(id, loc)
         case ULit(value, width) => referToNewConstant(value.toInt, width, false)
         case SLit(value, width) => referToNewConstant(value.toInt, width, true)
         case unhandled          => throw new Exception(s"unhandled arg type to be reference: $unhandled")
       }
     }
 
-    def newNode(id: HasId, name: String, resultType: fir.Type, input: MlirValue): Unit = {
+    def newNode(id: HasId, name: String, resultType: fir.Type, input: MlirValue, loc: MlirLocation): Unit = {
       val op = util
-        .OpBuilder("firrtl.node", firCtx.currentBlock, circt.unkLoc)
+        .OpBuilder("firrtl.node", firCtx.currentBlock, loc)
         .withNamedAttr("name", circt.mlirStringAttrGet(name))
         .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
         .withNamedAttr("annotations", circt.emptyArrayAttr)
@@ -393,7 +398,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         (types :+ tpe, attrs :+ circt.mlirTypeAttrGet(tpe))
       }
     }
-    val portsLocs = ports.map(_ => circt.unkLoc)
+    val portsLocs = defModule.ports.map(port => util.convert(port.sourceInfo))
     val portsAnnotationsAttrs = ports.map(_ => circt.emptyArrayAttr)
 
     val firModule = util
@@ -423,24 +428,27 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitAttach(attach: Attach): Unit = {
+    val loc = util.convert(attach.sourceInfo)
     util
-      .OpBuilder("firrtl.attach", firCtx.currentBlock, circt.unkLoc)
-      .withOperands(attach.locs.map(loc => util.referTo(loc.id).value))
+      .OpBuilder("firrtl.attach", firCtx.currentBlock, loc)
+      .withOperands(attach.locs.map(node => util.referTo(node.id, loc).value))
       .build()
   }
 
   def visitConnect(connect: Connect): Unit = {
+    val loc = util.convert(connect.sourceInfo)
+
     util
-      .OpBuilder("firrtl.connect", firCtx.currentBlock, circt.unkLoc)
-      .withOperand( /* dest */ util.referTo(connect.loc.id).value)
-      .withOperand( /* src */ util.referTo(connect.exp).value)
+      .OpBuilder("firrtl.connect", firCtx.currentBlock, loc)
+      .withOperand( /* dest */ util.referTo(connect.loc.id, loc).value)
+      .withOperand( /* src */ util.referTo(connect.exp, loc).value)
       .build()
   }
 
   def visitDefWire(defWire: DefWire): Unit = {
     val wireName = Converter.getRef(defWire.id, defWire.sourceInfo).name
     val op = util
-      .OpBuilder("firrtl.wire", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.wire", firCtx.currentBlock, util.convert(defWire.sourceInfo))
       .withNamedAttr("name", circt.mlirStringAttrGet(wireName))
       .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
@@ -451,16 +459,17 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitDefInvalid(defInvalid: DefInvalid): Unit = {
-    val dest = util.referTo(defInvalid.arg)
+    val loc = util.convert(defInvalid.sourceInfo)
+    val dest = util.referTo(defInvalid.arg, loc)
 
     val invalidValue = util
-      .OpBuilder("firrtl.invalidvalue", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.invalidvalue", firCtx.currentBlock, loc)
       .withResult(util.convert(dest.tpe))
       .build()
       .results(0)
 
     util
-      .OpBuilder("firrtl.connect", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.connect", firCtx.currentBlock, loc)
       .withOperand( /* dest */ dest.value)
       .withOperand( /* src */ invalidValue)
       .build()
@@ -471,10 +480,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitWhenBegin(whenBegin: WhenBegin): Unit = {
-    val cond = util.referTo(whenBegin.pred)
+    val loc = util.convert(whenBegin.sourceInfo)
+    val cond = util.referTo(whenBegin.pred, loc)
 
     val op = util
-      .OpBuilder("firrtl.when", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.when", firCtx.currentBlock, loc)
       .withRegion( /* then */ Seq((Seq.empty, Seq.empty)))
       .withRegion( /* else */ Seq((Seq.empty, Seq.empty)))
       .withOperand( /* condition */ cond.value)
@@ -491,7 +501,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     val name = Converter.getRef(defSeqMemory.id, defSeqMemory.sourceInfo).name
 
     val op = util
-      .OpBuilder("chirrtl.seqmem", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("chirrtl.seqmem", firCtx.currentBlock, util.convert(defSeqMemory.sourceInfo))
       .withNamedAttr(
         "ruw",
         circt.firrtlAttrGetRUW(defSeqMemory.readUnderWrite match {
@@ -514,8 +524,10 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitDefMemPort[T <: ChiselData](defMemPort: DefMemPort[T]): Unit = {
+    val loc = util.convert(defMemPort.sourceInfo)
+
     val op = util
-      .OpBuilder("chirrtl.memoryport", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("chirrtl.memoryport", firCtx.currentBlock, loc)
       .withNamedAttr(
         "direction",
         circt.firrtlAttrGetMemDir(defMemPort.dir match {
@@ -527,16 +539,16 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       )
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defMemPort.id, defMemPort.sourceInfo).name))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .withOperand( /* memory */ util.referTo(defMemPort.source.id).value)
+      .withOperand( /* memory */ util.referTo(defMemPort.source.id, loc).value)
       .withResult( /* data */ util.convert(Converter.extractType(defMemPort.id, defMemPort.sourceInfo)))
       .withResult( /* port */ circt.chirrtlTypeGetCMemoryPort())
       .build()
 
     util
-      .OpBuilder("chirrtl.memoryport.access", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("chirrtl.memoryport.access", firCtx.currentBlock, loc)
       .withOperand( /* port */ op.results(1))
-      .withOperand( /* index */ util.referTo(defMemPort.index).value)
-      .withOperand( /* clock */ util.referTo(defMemPort.clock).value)
+      .withOperand( /* index */ util.referTo(defMemPort.index, loc).value)
+      .withOperand( /* clock */ util.referTo(defMemPort.clock, loc).value)
       .build()
 
     firCtx.newItem(defMemPort.id, op.results(0))
@@ -544,7 +556,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
 
   def visitDefMemory(defMemory: DefMemory): Unit = {
     val op = util
-      .OpBuilder("chirrtl.combmem", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("chirrtl.combmem", firCtx.currentBlock, util.convert(defMemory.sourceInfo))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defMemory.id, defMemory.sourceInfo).name))
       .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
@@ -559,8 +571,10 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   }
 
   def visitDefPrim[T <: ChiselData](defPrim: DefPrim[T]): Unit = {
+    val loc = util.convert(defPrim.sourceInfo)
+
     def arg(index: Int): Refered = {
-      util.referTo(defPrim.args(index))
+      util.referTo(defPrim.args(index), loc)
     }
 
     def litArg(index: Int): BigInt = {
@@ -878,62 +892,66 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     }
 
     val op = util
-      .OpBuilder(s"firrtl.${defPrim.op.toString}", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder(s"firrtl.${defPrim.op.toString}", firCtx.currentBlock, loc)
       .withNamedAttrs(attrs)
       .withOperands(operands.map(_.value))
       .withResult(util.convert(resultType))
       .build()
-    util.newNode(defPrim.id, name, resultType, op.results(0))
+    util.newNode(defPrim.id, name, resultType, op.results(0), loc)
   }
 
   def visitDefReg(defReg: DefReg): Unit = {
+    val loc = util.convert(defReg.sourceInfo)
     val op = util
-      .OpBuilder("firrtl.reg", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.reg", firCtx.currentBlock, loc)
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defReg.id, defReg.sourceInfo).name))
       .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .withOperand( /* clockVal */ util.referTo(defReg.clock).value)
+      .withOperand( /* clockVal */ util.referTo(defReg.clock, loc).value)
       .withResult( /* result */ util.convert(Converter.extractType(defReg.id, defReg.sourceInfo)))
       .build()
     firCtx.newItem(defReg.id, op.results(0))
   }
 
   def visitDefRegInit(defRegInit: DefRegInit): Unit = {
+    val loc = util.convert(defRegInit.sourceInfo)
     val op = util
-      .OpBuilder("firrtl.regreset", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.regreset", firCtx.currentBlock, loc)
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(defRegInit.id, defRegInit.sourceInfo).name))
       .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .withOperand( /* clockVal */ util.referTo(defRegInit.clock).value)
-      .withOperand( /* reset */ util.referTo(defRegInit.reset).value)
-      .withOperand( /* init */ util.referTo(defRegInit.init).value)
+      .withOperand( /* clockVal */ util.referTo(defRegInit.clock, loc).value)
+      .withOperand( /* reset */ util.referTo(defRegInit.reset, loc).value)
+      .withOperand( /* init */ util.referTo(defRegInit.init, loc).value)
       .withResult( /* result */ util.convert(Converter.extractType(defRegInit.id, defRegInit.sourceInfo)))
       .build()
     firCtx.newItem(defRegInit.id, op.results(0))
   }
 
   def visitPrintf(parent: Component, printf: Printf): Unit = {
+    val loc = util.convert(printf.sourceInfo)
     val (fmt, args) = Converter.unpack(printf.pable, parent)
     util
-      .OpBuilder("firrtl.printf", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.printf", firCtx.currentBlock, loc)
       .withNamedAttr("formatString", circt.mlirStringAttrGet(fmt))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(printf.id, printf.sourceInfo).name))
-      .withOperand( /* clock */ util.referTo(printf.clock).value)
+      .withOperand( /* clock */ util.referTo(printf.clock, loc).value)
       .withOperand(
-        /* cond */ util.newConstantValue(fir.UIntType(fir.IntWidth(1)), circt.mlirIntegerTypeUnsignedGet(1), 1)
+        /* cond */ util.newConstantValue(fir.UIntType(fir.IntWidth(1)), circt.mlirIntegerTypeUnsignedGet(1), 1, loc)
       )
-      .withOperands( /* substitutions */ args.map(util.referTo(_).value))
+      .withOperands( /* substitutions */ args.map(util.referTo(_, loc).value))
       .build()
   }
 
   def visitStop(stop: Stop): Unit = {
+    val loc = util.convert(stop.sourceInfo)
     util
-      .OpBuilder("firrtl.stop", firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder("firrtl.stop", firCtx.currentBlock, loc)
       .withNamedAttr("exitCode", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), stop.ret))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(stop.id, stop.sourceInfo).name))
-      .withOperand( /* clock */ util.referTo(stop.clock).value)
+      .withOperand( /* clock */ util.referTo(stop.clock, loc).value)
       .withOperand(
-        /* cond */ util.newConstantValue(fir.UIntType(fir.IntWidth(1)), circt.mlirIntegerTypeUnsignedGet(1), 1)
+        /* cond */ util.newConstantValue(fir.UIntType(fir.IntWidth(1)), circt.mlirIntegerTypeUnsignedGet(1), 1, loc)
       )
       .build()
   }
@@ -943,16 +961,17 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     opName: String,
     args:   Seq[Arg]
   ): Unit = {
+    val loc = util.convert(verifi.sourceInfo)
     util
-      .OpBuilder(opName, firCtx.currentBlock, circt.unkLoc)
+      .OpBuilder(opName, firCtx.currentBlock, loc)
       .withNamedAttr("message", circt.mlirStringAttrGet(verifi.message))
       .withNamedAttr("name", circt.mlirStringAttrGet(Converter.getRef(verifi.id, verifi.sourceInfo).name))
-      .withOperand( /* clock */ util.referTo(verifi.clock).value)
-      .withOperand( /* predicate */ util.referTo(verifi.predicate).value)
+      .withOperand( /* clock */ util.referTo(verifi.clock, loc).value)
+      .withOperand( /* predicate */ util.referTo(verifi.predicate, loc).value)
       .withOperand(
-        /* enable */ util.newConstantValue(fir.UIntType(fir.IntWidth(1)), circt.mlirIntegerTypeUnsignedGet(1), 1)
+        /* enable */ util.newConstantValue(fir.UIntType(fir.IntWidth(1)), circt.mlirIntegerTypeUnsignedGet(1), 1, loc)
       )
-      .withOperands( /* substitutions */ args.map(util.referTo(_).value))
+      .withOperands( /* substitutions */ args.map(util.referTo(_, loc).value))
       .build()
   }
 

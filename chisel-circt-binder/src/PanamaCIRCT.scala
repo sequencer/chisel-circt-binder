@@ -30,10 +30,6 @@ class PanamaCIRCT {
   // Public items for outside
 
   // Constants for this instance
-  // TODO: use unknown location for now, but we should use the location from chisel
-  // In the future, we may be able to pass entire JVM stack to CIRCT in the “debug mode”
-  // and Chisel SourceInfo may not be useful anymore, since we can directly access SourceInfo with reflection.
-  // some ideas: use com-lihaoyi/sourcecode to reduce the maintaining burden.
   val unkLoc = mlirLocationUnknownGet()
   val emptyArrayAttr = mlirArrayAttrGet(Seq.empty)
 
@@ -133,6 +129,10 @@ class PanamaCIRCT {
   }
 
   def mlirLocationUnknownGet() = MlirLocation(CAPI.mlirLocationUnknownGet(arena, mlirCtx))
+
+  def mlirLocationFileLineColGet(filename: String, line: Int, col: Int) = MlirLocation(
+    CAPI.mlirLocationFileLineColGet(arena, mlirCtx, newString(filename).get, line, col)
+  )
 
   def mlirIdentifierGet(string: String) = MlirIdentifier(CAPI.mlirIdentifierGet(arena, mlirCtx, newString(string).get))
 

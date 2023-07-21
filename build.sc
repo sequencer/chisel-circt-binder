@@ -122,6 +122,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       // "mlirStringRefCreate", // inline function cannot be generated
       "mlirStringRefCreateFromCString",
       "mlirLocationUnknownGet",
+      "mlirLocationFileLineColGet",
       "mlirModuleCreateEmpty",
       "mlirModuleDestroy",
       "mlirModuleGetBody",
