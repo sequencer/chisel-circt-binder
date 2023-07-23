@@ -12,6 +12,7 @@ abstract class CIRCTConverter {
   def exportFIRRTL(): String
 
   def visitCircuit(name:                        String):               Unit
+  def visitDefBlackBox(defBlackBox:             DefBlackBox):          Unit
   def visitDefModule(defModule:                 DefModule):            Unit
   def visitAltBegin(altBegin:                   AltBegin):             Unit
   def visitAttach(attach:                       Attach):               Unit
@@ -22,6 +23,7 @@ abstract class CIRCTConverter {
   def visitWhenBegin(whenBegin:                 WhenBegin):            Unit
   def visitWhenEnd(whenEnd:                     WhenEnd):              Unit
   def visitDefSeqMemory(defSeqMemory:           DefSeqMemory):         Unit
+  def visitDefInstance(defInstance:             DefInstance):          Unit
   def visitDefMemPort[T <: Data](defMemPort:    DefMemPort[T]):        Unit
   def visitDefMemory(defMemory:                 DefMemory):            Unit
   def visitDefPrim[T <: Data](defPrim:          DefPrim[T]):           Unit

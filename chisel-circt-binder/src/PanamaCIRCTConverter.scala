@@ -2,22 +2,16 @@
 
 package chisel3.internal.panama
 
-import chisel3.{Aggregate, Data => ChiselData, Element, Mem, SyncReadMem, Vec, VecLike}
-import chisel3.experimental.{BaseModule, NoSourceInfo, SourceInfo, SourceLine}
-import chisel3.internal.{
-  ChildBinding,
-  HasId,
-  LitBinding,
-  MemoryPortBinding,
-  OpBinding,
-  PortBinding,
-  RegBinding,
-  SampleElementBinding,
-  SecretPortBinding,
-  WireBinding
-}
-import chisel3.internal.firrtl._
 import firrtl.{ir => fir}
+import chisel3.{Data => ChiselData, _}
+import chisel3.experimental._
+import chisel3.internal._
+import chisel3.internal.firrtl._
+import chisel3.assert.{Assert => VerifAssert}
+import chisel3.assume.{Assume => VerifAssume}
+import chisel3.cover.{Cover => VerifCover}
+import chisel3.printf.{Printf => VerifPrintf}
+import chisel3.stop.{Stop => VerifStop}
 
 import scala.collection.mutable
 import scala.math._
@@ -36,32 +30,43 @@ case class Op(state: MlirOperationState, op: MlirOperation, regions: Seq[Region]
   }
 }
 
-sealed abstract class Reference(data: ChiselData)
-object Reference {
-  final case class Value(ref: MlirValue, data: ChiselData) extends Reference(data)
-  final case class SubField(index: Int, data: ChiselData) extends Reference(data)
-  final case class SubIndex(index: Int, data: ChiselData) extends Reference(data)
-}
+case class Ports(
+  types:           Seq[MlirType],
+  dirs:            Seq[FIRRTLPortDir],
+  locs:            Seq[MlirLocation],
+  names:           Seq[String],
+  nameAttrs:       Seq[MlirAttribute],
+  typeAttrs:       Seq[MlirAttribute],
+  annotationAttrs: Seq[MlirAttribute],
+  symAttrs:        Seq[MlirAttribute],
+  locAttrs:        Seq[MlirAttribute])
 
-sealed abstract class FirTypeOrChiselData
-object FirTypeOrChiselData {
-  final case class Type(tpe: fir.Type) extends FirTypeOrChiselData
-  final case class Data(data: ChiselData) extends FirTypeOrChiselData
-
-  implicit def apply(tpe:  fir.Type) = Type(tpe)
-  implicit def apply(data: ChiselData) = Data(data)
-}
-
-case class Refered(value: MlirValue, private var tpeOrData: FirTypeOrChiselData) {
-  def tpe(): fir.Type = {
+final case class FirTypeLazy(private var tpeOrData: Either[fir.Type, ChiselData]) {
+  def get: fir.Type = {
     tpeOrData match {
-      case FirTypeOrChiselData.Type(tpe) => tpe
-      case FirTypeOrChiselData.Data(data) =>
+      case Left(tpe) => tpe
+      case Right(data) =>
         val tpe = Converter.extractType(data, null)
-        tpeOrData = FirTypeOrChiselData.Type(tpe)
+        tpeOrData = Left(tpe)
         tpe
     }
   }
+}
+object FirTypeLazy {
+  implicit def apply(tpe:  fir.Type):   FirTypeLazy = FirTypeLazy(Left(tpe))
+  implicit def apply(data: ChiselData): FirTypeLazy = FirTypeLazy(Right(data))
+}
+
+sealed abstract class Reference
+object Reference {
+  final case class Null() extends Reference
+  final case class Value(value: MlirValue, private val typeLazy: FirTypeLazy) extends Reference {
+    def tpe: fir.Type = typeLazy.get
+  }
+  // We made it for BlackBox port reference, as there will be only `io` port inside BlackBox and it will be stripped
+  final case class BlackBoxIO(enclosure: BaseModule) extends Reference
+  final case class SubField(index: Int, tpe: fir.Type) extends Reference
+  final case class SubIndex(index: Int, tpe: fir.Type) extends Reference
 }
 
 case class WhenContext(op: Op, var inAlt: Boolean) {
@@ -70,21 +75,30 @@ case class WhenContext(op: Op, var inAlt: Boolean) {
 
 class FirContext {
   var opCircuit: Op = null
-  var opModule:  Op = null
-  val items = mutable.Map.empty[Long, MlirValue]
+  var opModules: Seq[(String, Op)] = Seq.empty
+  val items = mutable.Map.empty[Long, Seq[MlirValue]]
   val whenStack = mutable.Stack.empty[WhenContext]
 
-  def newItem(id: HasId, value: MlirValue) = items += ((id._id, value))
-  def getItem(id: HasId): Option[MlirValue] = items.get(id._id)
+  def newItem(id:    HasId, value: MlirValue) = items += ((id._id, Seq(value)))
+  def newItemVec(id: HasId, value: Seq[MlirValue]) = items += ((id._id, value))
+  def getItem(id: HasId): Option[MlirValue] = {
+    items
+      .get(id._id)
+      .map(i => {
+        assert(i.length == 1, "item is a group")
+        i(0)
+      })
+  }
+  def getItemVec(id: HasId): Option[Seq[MlirValue]] = items.get(id._id)
 
   def enterNewCircuit(newCircuit: Op): Unit = {
-    enterNewModule(null)
+    items.clear()
     opCircuit = newCircuit
   }
 
-  def enterNewModule(newModule: Op): Unit = {
+  def enterNewModule(name: String, newModule: Op): Unit = {
     items.clear()
-    opModule = newModule
+    opModules = opModules :+ (name, newModule)
   }
 
   def enterWhen(whenOp: Op): Unit = whenStack.push(WhenContext(whenOp, false))
@@ -93,8 +107,9 @@ class FirContext {
   def leaveWhen(depth:      Int, hasAlt: Boolean): Unit = if (!hasAlt) (0 to depth).foreach(_ => whenStack.pop)
 
   def circuitBlock: MlirBlock = opCircuit.region(0).block(0)
-  def moduleBlock:  MlirBlock = opModule.region(0).block(0)
-  def currentBlock: MlirBlock = if (whenStack.nonEmpty) whenStack.top.block else moduleBlock
+  def findModuleBlock(name: String): MlirBlock = opModules.find(_._1 == name).get._2.region(0).block(0)
+  def currentModuleBlock: MlirBlock = opModules.last._2.region(0).block(0)
+  def currentBlock:       MlirBlock = if (whenStack.nonEmpty) whenStack.top.block else currentModuleBlock
 }
 
 class PanamaCIRCTConverter extends CIRCTConverter {
@@ -103,6 +118,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   val mlirRootModule = circt.mlirModuleCreateEmpty(circt.unkLoc)
 
   object util {
+
     def convert(firType: fir.Type): MlirType = {
       def convertFirWidth(width: fir.Width) = width match {
         case fir.UnknownWidth => -1
@@ -138,6 +154,52 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         case _: NoSourceInfo => circt.unkLoc
         case SourceLine(filename, line, col) => circt.mlirLocationFileLineColGet(filename, line, col)
       }
+    }
+
+    def convert(name: String, parameter: Param): MlirAttribute = {
+      val (tpe, value) = parameter match {
+        case IntParam(value) =>
+          val tpe = circt.mlirIntegerTypeGet(max(bitLength(value.toInt), 32))
+          (tpe, circt.mlirIntegerAttrGet(tpe, value.toInt))
+        case DoubleParam(value) =>
+          val tpe = circt.mlirF64TypeGet()
+          (tpe, circt.mlirFloatAttrDoubleGet(tpe, value))
+        case StringParam(value) =>
+          val tpe = circt.mlirNoneTypeGet()
+          (tpe, circt.mlirStringAttrGet(value))
+      }
+      circt.firrtlAttrGetParamDecl(name, tpe, value)
+    }
+
+    def convert(ports: Seq[Port], topDir: SpecifiedDirection = SpecifiedDirection.Unspecified): Ports = {
+      val irs = ports.map(Converter.convert(_, topDir)) // firrtl.Port -> IR.Port
+      val types = irs.foldLeft(Seq.empty[MlirType]) { case (types, port) => types :+ util.convert(port.tpe) }
+      val locs = ports.map(port => util.convert(port.sourceInfo))
+
+      Ports(
+        types = types,
+        dirs = irs.map(_.direction match {
+          case fir.Input  => FIRRTLPortDir.Input
+          case fir.Output => FIRRTLPortDir.Output
+        }),
+        locs = locs,
+        names = irs.map(_.name),
+        nameAttrs = irs.map(port => circt.mlirStringAttrGet(port.name)),
+        typeAttrs = types.map(circt.mlirTypeAttrGet(_)),
+        annotationAttrs = ports.map(_ => circt.emptyArrayAttr),
+        symAttrs = Seq.empty,
+        locAttrs = locs.map(circt.mlirLocationGetAttribute(_))
+      )
+    }
+
+    def moduleBuilderInsertPorts(builder: OpBuilder, ports: Ports): OpBuilder = {
+      builder
+        .withNamedAttr("portDirections", circt.firrtlAttrGetPortDirs(ports.dirs))
+        .withNamedAttr("portNames", circt.mlirArrayAttrGet(ports.nameAttrs))
+        .withNamedAttr("portTypes", circt.mlirArrayAttrGet(ports.typeAttrs))
+        .withNamedAttr("portAnnotations", circt.mlirArrayAttrGet(ports.annotationAttrs))
+        .withNamedAttr("portSyms", circt.mlirArrayAttrGet(ports.symAttrs))
+        .withNamedAttr("portLocations", circt.mlirArrayAttrGet(ports.locAttrs))
     }
 
     def bitLength(n: Int): Int = {
@@ -226,22 +288,29 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     def valueReferenceChain(id: HasId): Seq[Reference] = {
       def rec(id: HasId, chain: Seq[Reference]): Seq[Reference] = {
         def referToPort(data: ChiselData, enclosure: BaseModule): Reference = {
-          val index = enclosure
-            .getChiselPorts(chisel3.experimental.UnlocatableSourceInfo)
-            .indexWhere(_._2 == data)
-          val value = circt.mlirBlockGetArgument(firCtx.moduleBlock, index)
-          Reference.Value(value, data)
+          enclosure match {
+            case enclosure: BlackBox => Reference.BlackBoxIO(enclosure)
+            case enclosure =>
+              val index = enclosure
+                .getChiselPorts(UnlocatableSourceInfo)
+                .indexWhere(_._2 == data)
+              assert(index != -1, s"can't find port '$data' from '$enclosure'")
+              val value = circt.mlirBlockGetArgument(firCtx.findModuleBlock(enclosure.name), index)
+              Reference.Value(value, data)
+          }
         }
 
         def referToElement(data: ChiselData): Reference = {
+          val tpe = Converter.extractType(data, null)
+
           data.binding.getOrElse(throw new Exception("non-child data")) match {
             case binding: ChildBinding =>
               binding.parent match {
-                case vec:    Vec[_] => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
-                case record: chisel3.Record =>
-                  Reference.SubField(record.elements.size - record.elements.values.iterator.indexOf(data) - 1, data)
+                case vec:    Vec[_] => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), tpe)
+                case record: Record =>
+                  Reference.SubField(record.elements.size - record.elements.values.iterator.indexOf(data) - 1, tpe)
               }
-            case SampleElementBinding(vec) => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), data)
+            case SampleElementBinding(vec) => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), tpe)
             case _                         => throw new Exception("non-child data")
           }
         }
@@ -276,36 +345,42 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       rec(id, Seq()).reverse // Reverse to make it root first
     }
 
-    def referTo(id: HasId, loc: MlirLocation): Refered = {
+    def referTo(id: HasId, loc: MlirLocation): Reference.Value = {
       val indexType = circt.mlirIntegerTypeGet(32)
 
       val refChain = valueReferenceChain(id)
 
       // Root value will be the first element in the chain
       // So the initialization value of the `foldLeft` is unnecessary
-      refChain.foldLeft[Refered](null) {
-        case (parent, ref: Reference) => {
+      refChain.foldLeft(Reference.Null().asInstanceOf[Reference]) {
+        case (parent: Reference, ref: Reference) => {
           ref match {
-            case Reference.Value(value, data) => Refered(value, data)
-            case Reference.SubField(index, data) =>
-              val tpe = Converter.extractType(data, null)
-              Refered(
-                util
-                  .OpBuilder("firrtl.subfield", firCtx.currentBlock, loc)
-                  .withNamedAttr("fieldIndex", circt.mlirIntegerAttrGet(indexType, index))
-                  .withOperand(parent.value)
-                  .withResult(util.convert(tpe))
-                  .build()
-                  .results(0),
-                tpe
-              )
-            case Reference.SubIndex(index, data) =>
-              val tpe = Converter.extractType(data, null)
-              Refered(
+            case ref @ Reference.Value(_, _)   => ref
+            case ref @ Reference.BlackBoxIO(_) => ref
+            case Reference.SubField(index, tpe) =>
+              val value = parent match {
+                case Reference.Value(parentValue, parentType) =>
+                  util
+                    .OpBuilder("firrtl.subfield", firCtx.currentBlock, loc)
+                    .withNamedAttr("fieldIndex", circt.mlirIntegerAttrGet(indexType, index))
+                    .withOperand(parentValue)
+                    .withResult(util.convert(tpe))
+                    .build()
+                    .results(0)
+                case Reference.BlackBoxIO(enclosure) =>
+                  // Look up the field under the instance
+                  firCtx.getItemVec(enclosure).map(_(index)).get
+              }
+              Reference.Value(value, tpe)
+            case Reference.SubIndex(index, tpe) =>
+              val (parentValue, parentType) = parent match {
+                case Reference.Value(parentValue, parentType) => (parentValue, parentType)
+              }
+              Reference.Value(
                 util
                   .OpBuilder("firrtl.subindex", firCtx.currentBlock, loc)
                   .withNamedAttr("index", circt.mlirIntegerAttrGet(indexType, index))
-                  .withOperand(parent.value)
+                  .withOperand(parentValue)
                   .withResult(util.convert(tpe))
                   .build()
                   .results(0),
@@ -313,11 +388,13 @@ class PanamaCIRCTConverter extends CIRCTConverter {
               )
           }
         }
+      } match {
+        case ref @ Reference.Value(_, _) => ref
       }
     }
 
-    def referTo(arg: Arg, loc: MlirLocation): Refered = {
-      def referToNewConstant(n: Int, w: Width, isSigned: Boolean): Refered = {
+    def referTo(arg: Arg, loc: MlirLocation): Reference.Value = {
+      def referToNewConstant(n: Int, w: Width, isSigned: Boolean): Reference.Value = {
         val (firWidth, valWidth) = w match {
           case _: UnknownWidth =>
             val bitLen = util.bitLength(n)
@@ -327,7 +404,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         val resultType = if (isSigned) fir.SIntType(firWidth) else fir.UIntType(firWidth)
         val valueType =
           if (isSigned) circt.mlirIntegerTypeSignedGet(valWidth) else circt.mlirIntegerTypeUnsignedGet(valWidth)
-        Refered(util.newConstantValue(resultType, valueType, n.toInt, loc), resultType)
+        Reference.Value(util.newConstantValue(resultType, valueType, n.toInt, loc), resultType)
       }
 
       arg match {
@@ -373,37 +450,32 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     firCtx.enterNewCircuit(firCircuit)
   }
 
-  def visitDefModule(defModule: DefModule): Unit = {
-    val ports = defModule.ports.map(Converter.convert(_))
-    val (portsTypes, portsTypeAttrs) = ports.foldLeft((Seq.empty[MlirType], Seq.empty[MlirAttribute])) {
-      case ((types, attrs), port) => {
-        val tpe = util.convert(port.tpe)
-        (types :+ tpe, attrs :+ circt.mlirTypeAttrGet(tpe))
-      }
-    }
-    val portsLocs = defModule.ports.map(port => util.convert(port.sourceInfo))
-    val portsAnnotationsAttrs = ports.map(_ => circt.emptyArrayAttr)
+  def visitDefBlackBox(defBlackBox: DefBlackBox): Unit = {
+    val ports = util.convert(defBlackBox.ports, defBlackBox.topDir)
+    val nameAttr = circt.mlirStringAttrGet(defBlackBox.name)
 
-    val firModule = util
-      .OpBuilder("firrtl.module", firCtx.circuitBlock, circt.unkLoc)
-      .withRegion(Seq((portsTypes, portsLocs)))
-      .withNamedAttr("sym_name", circt.mlirStringAttrGet(defModule.name))
-      .withNamedAttr(
-        "portDirections",
-        circt.firrtlAttrGetPortDirs(ports.map(_.direction match {
-          case fir.Input  => FIRRTLPortDir.Input
-          case fir.Output => FIRRTLPortDir.Output
-        }))
-      )
-      .withNamedAttr("portNames", circt.mlirArrayAttrGet(ports.map(port => circt.mlirStringAttrGet(port.name))))
-      .withNamedAttr("portTypes", circt.mlirArrayAttrGet(portsTypeAttrs))
-      .withNamedAttr("portAnnotations", circt.mlirArrayAttrGet(portsAnnotationsAttrs))
-      .withNamedAttr("portSyms", circt.emptyArrayAttr)
-      .withNamedAttr("portLocations", circt.mlirArrayAttrGet(portsLocs.map(loc => MlirAttribute(loc.ptr))))
+    val builder = util
+      .OpBuilder("firrtl.extmodule", firCtx.circuitBlock, circt.unkLoc)
+      .withNamedAttr("sym_name", nameAttr)
+      .withNamedAttr("defname", nameAttr)
+      .withNamedAttr("parameters", circt.mlirArrayAttrGet(defBlackBox.params.map(p => util.convert(p._1, p._2)).toSeq))
       .withNamedAttr("annotations", circt.emptyArrayAttr)
-      .build()
+    val firModule = util.moduleBuilderInsertPorts(builder, ports).build()
 
-    firCtx.enterNewModule(firModule)
+    firCtx.enterNewModule(defBlackBox.name, firModule)
+  }
+
+  def visitDefModule(defModule: DefModule): Unit = {
+    val ports = util.convert(defModule.ports)
+
+    val builder = util
+      .OpBuilder("firrtl.module", firCtx.circuitBlock, circt.unkLoc)
+      .withRegion(Seq((ports.types, ports.locs)))
+      .withNamedAttr("sym_name", circt.mlirStringAttrGet(defModule.name))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+    val firModule = util.moduleBuilderInsertPorts(builder, ports).build()
+
+    firCtx.enterNewModule(defModule.name, firModule)
   }
 
   def visitAltBegin(altBegin: AltBegin): Unit = {
@@ -478,6 +550,26 @@ class PanamaCIRCTConverter extends CIRCTConverter {
 
   def visitWhenEnd(whenEnd: WhenEnd): Unit = {
     firCtx.leaveWhen(whenEnd.firrtlDepth, whenEnd.hasAlt)
+  }
+
+  def visitDefInstance(defInstance: DefInstance): Unit = {
+    val loc = util.convert(defInstance.sourceInfo)
+    val ports = util.convert(defInstance.ports)
+    val moduleName = defInstance.id.desiredName
+
+    val results = util
+      .OpBuilder("firrtl.instance", firCtx.currentBlock, loc)
+      .withNamedAttr("moduleName", circt.mlirFlatSymbolRefAttrGet(moduleName))
+      .withNamedAttr("name", circt.mlirStringAttrGet(defInstance.name))
+      .withNamedAttr("nameKind", circt.firrtlAttrGetNameKind(FIRRTLNameKind.InterestingName))
+      .withNamedAttr("portDirections", circt.firrtlAttrGetPortDirs(ports.dirs))
+      .withNamedAttr("portNames", circt.mlirArrayAttrGet(ports.nameAttrs))
+      .withNamedAttr("portAnnotations", circt.mlirArrayAttrGet(ports.annotationAttrs))
+      .withNamedAttr("annotations", circt.emptyArrayAttr)
+      .withResults(ports.types)
+      .build()
+      .results
+    firCtx.newItemVec(defInstance.id, results)
   }
 
   def visitDefSeqMemory(defSeqMemory: DefSeqMemory): Unit = {
@@ -556,7 +648,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
   def visitDefPrim[T <: ChiselData](defPrim: DefPrim[T]): Unit = {
     val loc = util.convert(defPrim.sourceInfo)
 
-    def arg(index: Int): Refered = {
+    def arg(index: Int): Reference.Value = {
       util.referTo(defPrim.args(index), loc)
     }
 
@@ -939,7 +1031,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .build()
   }
 
-  def visitVerification[T <: chisel3.VerificationStatement](
+  def visitVerification[T <: VerificationStatement](
     verifi: Verification[T],
     opName: String,
     args:   Seq[Arg]
@@ -958,16 +1050,16 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       .build()
   }
 
-  def visitAssert(assert: Verification[chisel3.assert.Assert]): Unit = {
+  def visitAssert(assert: Verification[VerifAssert]): Unit = {
     visitVerification(assert, "firrtl.assert", Seq.empty)
   }
 
-  def visitAssume(assume: Verification[chisel3.assume.Assume]): Unit = {
+  def visitAssume(assume: Verification[VerifAssume]): Unit = {
     // TODO: CIRCT emits `assert` for this, is it expected?
     visitVerification(assume, "firrtl.assume", Seq.empty)
   }
 
-  def visitCover(cover: Verification[chisel3.cover.Cover]): Unit = {
+  def visitCover(cover: Verification[VerifCover]): Unit = {
     // TODO: CIRCT emits `assert` for this, is it expected?
     visitVerification(cover, "firrtl.cover", Seq.empty)
   }
@@ -990,8 +1082,7 @@ private[chisel3] object PanamaCIRCTConverter {
     }
   }
   def visitDefBlackBox(defBlackBox: DefBlackBox)(implicit cvt: CIRCTConverter): Unit = {
-    // TODO
-    throw new Exception("TODO")
+    cvt.visitDefBlackBox(defBlackBox)
   }
   def visitDefModule(defModule: DefModule)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitDefModule(defModule)
@@ -1009,21 +1100,21 @@ private[chisel3] object PanamaCIRCTConverter {
           case whenEnd:      WhenEnd      => visitWhenEnd(whenEnd, nextCmd)
 
           // Definition
-          case defInstance:  DefInstance                         => visitDefInstance(defInstance)
-          case defMemPort:   DefMemPort[ChiselData]              => visitDefMemPort(defMemPort)
-          case defMemory:    DefMemory                           => visitDefMemory(defMemory)
-          case defPrim:      DefPrim[ChiselData]                 => visitDefPrim(defPrim)
-          case defReg:       DefReg                              => visitDefReg(defReg)
-          case defRegInit:   DefRegInit                          => visitDefRegInit(defRegInit)
-          case defSeqMemory: DefSeqMemory                        => visitDefSeqMemory(defSeqMemory)
-          case defWire:      DefWire                             => visitDefWire(defWire)
-          case printf:       Printf                              => visitPrintf(defModule, printf)
-          case stop:         Stop                                => visitStop(stop)
-          case assert:       Verification[chisel3.assert.Assert] => visitVerfiAssert(assert)
-          case assume:       Verification[chisel3.assume.Assume] => visitVerfiAssume(assume)
-          case cover:        Verification[chisel3.cover.Cover]   => visitVerfiCover(cover)
-          case printf:       Verification[chisel3.printf.Printf] => visitVerfiPrintf(printf)
-          case stop:         Verification[chisel3.stop.Stop]     => visitVerfiStop(stop)
+          case defInstance:  DefInstance               => visitDefInstance(defInstance)
+          case defMemPort:   DefMemPort[ChiselData]    => visitDefMemPort(defMemPort)
+          case defMemory:    DefMemory                 => visitDefMemory(defMemory)
+          case defPrim:      DefPrim[ChiselData]       => visitDefPrim(defPrim)
+          case defReg:       DefReg                    => visitDefReg(defReg)
+          case defRegInit:   DefRegInit                => visitDefRegInit(defRegInit)
+          case defSeqMemory: DefSeqMemory              => visitDefSeqMemory(defSeqMemory)
+          case defWire:      DefWire                   => visitDefWire(defWire)
+          case printf:       Printf                    => visitPrintf(defModule, printf)
+          case stop:         Stop                      => visitStop(stop)
+          case assert:       Verification[VerifAssert] => visitVerfiAssert(assert)
+          case assume:       Verification[VerifAssume] => visitVerfiAssume(assume)
+          case cover:        Verification[VerifCover]  => visitVerfiCover(cover)
+          case printf:       Verification[VerifPrintf] => visitVerfiPrintf(printf)
+          case stop:         Verification[VerifStop]   => visitVerfiStop(stop)
           case unhandled => throw new Exception(s"unhandled op: $unhandled")
         }
     }
@@ -1060,8 +1151,7 @@ private[chisel3] object PanamaCIRCTConverter {
     cvt.visitWhenEnd(whenEndPatched)
   }
   def visitDefInstance(defInstance: DefInstance)(implicit cvt: CIRCTConverter): Unit = {
-    // TODO
-    throw new Exception("TODO")
+    cvt.visitDefInstance(defInstance)
   }
   def visitDefMemPort[T <: ChiselData](defMemPort: DefMemPort[T])(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitDefMemPort(defMemPort)
@@ -1090,20 +1180,20 @@ private[chisel3] object PanamaCIRCTConverter {
   def visitStop(stop: Stop)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitStop(stop)
   }
-  def visitVerfiAssert(assert: Verification[chisel3.assert.Assert])(implicit cvt: CIRCTConverter): Unit = {
+  def visitVerfiAssert(assert: Verification[VerifAssert])(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitAssert(assert)
   }
-  def visitVerfiAssume(assume: Verification[chisel3.assume.Assume])(implicit cvt: CIRCTConverter): Unit = {
+  def visitVerfiAssume(assume: Verification[VerifAssume])(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitAssume(assume)
   }
-  def visitVerfiCover(cover: Verification[chisel3.cover.Cover])(implicit cvt: CIRCTConverter): Unit = {
+  def visitVerfiCover(cover: Verification[VerifCover])(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitCover(cover)
   }
-  def visitVerfiPrintf(printf: Verification[chisel3.printf.Printf])(implicit cvt: CIRCTConverter): Unit = {
+  def visitVerfiPrintf(printf: Verification[VerifPrintf])(implicit cvt: CIRCTConverter): Unit = {
     // TODO: Not used anywhere?
     throw new Exception("unimplemented")
   }
-  def visitVerfiStop(stop: Verification[chisel3.stop.Stop])(implicit cvt: CIRCTConverter): Unit = {
+  def visitVerfiStop(stop: Verification[VerifStop])(implicit cvt: CIRCTConverter): Unit = {
     // TODO: Not used anywhere?
     throw new Exception("unimplemented")
   }

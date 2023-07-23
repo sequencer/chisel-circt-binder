@@ -121,6 +121,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirDialectHandleLoadDialect",
       // "mlirStringRefCreate", // inline function cannot be generated
       "mlirStringRefCreateFromCString",
+      "mlirLocationGetAttribute",
       "mlirLocationUnknownGet",
       "mlirLocationFileLineColGet",
       "mlirModuleCreateEmpty",
@@ -130,6 +131,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirOperationStateGet",
       "mlirNamedAttributeGet",
       "mlirIntegerAttrGet",
+      "mlirFloatAttrDoubleGet",
       "mlirStringAttrGet",
       "mlirArrayAttrGet",
       "mlirTypeAttrGet",
@@ -142,7 +144,11 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       "mlirIntegerTypeUnsignedGet",
       "mlirIntegerTypeSignedGet",
       ////////////////////
+      "mlirF64TypeGet",
+      "mlirNoneTypeGet",
+      ////////////////////
       "mlirIdentifierGet",
+      "mlirFlatSymbolRefAttrGet",
       // "mlirAttributeParseGet", // We should not "parse" anything
       "mlirOperationStateAddOperands",
       "mlirOperationStateAddResults",
@@ -170,6 +176,7 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
       //
       // FIRRTL Attribute
       "firrtlAttrGetPortDirs",
+      "firrtlAttrGetParamDecl",
       "firrtlAttrGetNameKind",
       "firrtlAttrGetRUW",
       "firrtlAttrGetMemoryInit",
@@ -248,9 +255,11 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
         "-l", "MLIRCAPIIR",
         "-l", "CIRCTCAPIFIRRTL",
         "-l", "CIRCTCAPICHIRRTL",
+        "-l", "CIRCTCAPIHW",
         "-l", "CIRCTCAPIExportFIRRTL",
         "-l", "CIRCTCAPIExportVerilog",
         "-l", "CIRCTFIRRTL",
+        "-l", "CIRCTHW",
         "-l", "CIRCTExportFIRRTL",
         "-l", "CIRCTExportVerilog",
         "-l", "MLIRCAPIRegisterEverything",
