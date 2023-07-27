@@ -212,6 +212,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       bits
     }
 
+    def widthShl(lhs: fir.Width, rhs: fir.Width): fir.Width = (lhs, rhs) match {
+      case (l: fir.IntWidth, r: fir.IntWidth) => fir.IntWidth(l.width.toInt << r.width.toInt)
+      case _ => fir.UnknownWidth
+    }
+
     case class OpBuilder(opName: String, parent: MlirBlock, loc: MlirLocation) {
       var regionsBlocks: Seq[Seq[(Seq[MlirType], Seq[MlirLocation])]] = Seq.empty
       var attrs:         Seq[MlirNamedAttribute] = Seq.empty
@@ -291,9 +296,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           enclosure match {
             case enclosure: BlackBox => Reference.BlackBoxIO(enclosure)
             case enclosure =>
-              val index = enclosure
-                .getChiselPorts(UnlocatableSourceInfo)
-                .indexWhere(_._2 == data)
+              val index = enclosure.getChiselPorts.indexWhere(_._2 == data)
               assert(index != -1, s"can't find port '$data' from '$enclosure'")
               val value = circt.mlirBlockGetArgument(firCtx.findModuleBlock(enclosure.name), index)
               Reference.Value(value, data)
@@ -328,7 +331,6 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           case data:   ChiselData =>
             data.binding.getOrElse(throw new Exception("unbound data")) match {
               case PortBinding(enclosure)                   => rec(enclosure, chain :+ referToPort(data, enclosure))
-              case SecretPortBinding(enclosure)             => rec(enclosure, chain :+ referToPort(data, enclosure))
               case ChildBinding(parent)                     => rec(parent, chain :+ referToElement(data))
               case SampleElementBinding(parent)             => rec(parent, chain :+ referToElement(data))
               case MemoryPortBinding(enclosure, visibility) => rec(enclosure, chain :+ referToValue(data))
@@ -687,11 +689,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       case PrimOp.TailOp =>
         val (input, amount) = (arg(0), litArg(1).toInt)
         val width = input.tpe match {
-          case fir.SIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
-          case fir.UIntType(fir.IntWidth(inputWidth)) => inputWidth - amount
+          case fir.SIntType(inputWidth) => inputWidth - fir.IntWidth(amount)
+          case fir.UIntType(inputWidth) => inputWidth - fir.IntWidth(amount)
         }
         val attrs = Seq(("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)))
-        (attrs, Seq(input), fir.UIntType(fir.IntWidth(width)))
+        (attrs, Seq(input), fir.UIntType(width))
 
       // Attributes
       //   amount: 32-bit signless integer
@@ -756,11 +758,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       case PrimOp.ShiftLeftOp =>
         val (input, amount) = (arg(0), litArg(1).toInt)
         val (width, retTypeFn) = input.tpe match {
-          case fir.SIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.SIntType)
-          case fir.UIntType(fir.IntWidth(inputWidth)) => (inputWidth + amount, fir.UIntType)
+          case fir.SIntType(inputWidth) => (inputWidth + fir.IntWidth(amount), fir.SIntType)
+          case fir.UIntType(inputWidth) => (inputWidth + fir.IntWidth(amount), fir.UIntType)
         }
         val attrs = Seq(("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)))
-        (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
+        (attrs, Seq(input), retTypeFn(width))
 
       // Attributes
       //   amount: 32-bit signless integer
@@ -771,11 +773,11 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       case PrimOp.ShiftRightOp =>
         val (input, amount) = (arg(0), litArg(1).toInt)
         val (width, retTypeFn) = input.tpe match {
-          case fir.SIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.SIntType)
-          case fir.UIntType(fir.IntWidth(inputWidth)) => (max((inputWidth - amount).toInt, 1), fir.UIntType)
+          case fir.SIntType(inputWidth) => ((inputWidth - fir.IntWidth(amount)).max(fir.IntWidth(1)), fir.SIntType)
+          case fir.UIntType(inputWidth) => ((inputWidth - fir.IntWidth(amount)).max(fir.IntWidth(1)), fir.UIntType)
         }
         val attrs = Seq(("amount", circt.mlirIntegerAttrGet(circt.mlirIntegerTypeGet(32), amount)))
-        (attrs, Seq(input), retTypeFn(fir.IntWidth(width)))
+        (attrs, Seq(input), retTypeFn(width))
 
       // Operands
       //   lhs: sint or uint
@@ -785,10 +787,10 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       case PrimOp.DynamicShiftLeftOp =>
         val (lhs, rhs) = (arg(0), arg(1))
         val retType = (lhs.tpe, rhs.tpe) match {
-          case (fir.SIntType(fir.IntWidth(lhsWidth)), fir.UIntType(fir.IntWidth(rhsWidth))) =>
-            fir.SIntType(fir.IntWidth(lhsWidth.toInt + (1 << rhsWidth.toInt) - 1))
-          case (fir.UIntType(fir.IntWidth(lhsWidth)), fir.UIntType(fir.IntWidth(rhsWidth))) =>
-            fir.UIntType(fir.IntWidth(lhsWidth.toInt + (1 << rhsWidth.toInt) - 1))
+          case (fir.SIntType(lhsWidth), fir.UIntType(rhsWidth)) =>
+            fir.SIntType(lhsWidth + util.widthShl(fir.IntWidth(1), rhsWidth) - fir.IntWidth(1))
+          case (fir.UIntType(lhsWidth), fir.UIntType(rhsWidth)) =>
+            fir.UIntType(lhsWidth + util.widthShl(fir.IntWidth(1), rhsWidth) - fir.IntWidth(1))
         }
         (Seq.empty, Seq(lhs, rhs), retType)
 
@@ -903,8 +905,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
       //   result: a passive base type (contain no flips)
       case PrimOp.MultiplexOp =>
         val (sel, high, low) = (arg(0), arg(1), arg(2))
-        assert(high.tpe == low.tpe)
-        (Seq.empty, Seq(sel, high, low), high.tpe)
+        (Seq.empty, Seq(sel, high, low), Converter.extractType(defPrim.id, defPrim.sourceInfo))
 
       // Operands
       //   input: sint or uint
@@ -1090,14 +1091,15 @@ private[chisel3] object PanamaCIRCTConverter {
       case (cmd, nextCmd) =>
         cmd match {
           // Command
-          case altBegin:     AltBegin     => visitAltBegin(altBegin)
-          case attach:       Attach       => visitAttach(attach)
-          case connect:      Connect      => visitConnect(connect)
-          case connectInit:  ConnectInit  => visitConnectInit(connectInit)
-          case defInvalid:   DefInvalid   => visitDefInvalid(defInvalid)
-          case otherwiseEnd: OtherwiseEnd => visitOtherwiseEnd(otherwiseEnd)
-          case whenBegin:    WhenBegin    => visitWhenBegin(whenBegin)
-          case whenEnd:      WhenEnd      => visitWhenEnd(whenEnd, nextCmd)
+          case altBegin:       AltBegin       => visitAltBegin(altBegin)
+          case attach:         Attach         => visitAttach(attach)
+          case connect:        Connect        => visitConnect(connect)
+          case partialConnect: PartialConnect => {} // TODO
+          case connectInit:    ConnectInit    => visitConnectInit(connectInit)
+          case defInvalid:     DefInvalid     => visitDefInvalid(defInvalid)
+          case otherwiseEnd:   OtherwiseEnd   => visitOtherwiseEnd(otherwiseEnd)
+          case whenBegin:      WhenBegin      => visitWhenBegin(whenBegin)
+          case whenEnd:        WhenEnd        => visitWhenEnd(whenEnd, nextCmd)
 
           // Definition
           case defInstance:  DefInstance               => visitDefInstance(defInstance)
