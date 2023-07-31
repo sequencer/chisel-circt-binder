@@ -3,6 +3,7 @@
 package chisel3.internal.panama
 
 import java.io.OutputStream
+import geny.Writable
 import scala.collection.mutable
 import scala.math._
 
@@ -451,8 +452,10 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     circt.mlirOperationDump(circt.mlirModuleGetOperation(mlirRootModule))
   }
 
-  def exportFIRRTL(stream: OutputStream): Unit = {
-    circt.mlirExportFIRRTL(mlirRootModule, message => stream.write(message.getBytes))
+  val firrtlStream = new Writable {
+    def writeBytesTo(out: OutputStream): Unit = {
+      circt.mlirExportFIRRTL(mlirRootModule, message => out.write(message.getBytes))
+    }
   }
 
   def visitCircuit(name: String): Unit = {
