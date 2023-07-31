@@ -85,7 +85,7 @@ class FirContext {
     items
       .get(id._id)
       .map(i => {
-        assert(i.length == 1, "item is a group")
+        assert(i.length == 1, "item is a vector")
         i(0)
       })
   }
@@ -108,6 +108,7 @@ class FirContext {
 
   def circuitBlock: MlirBlock = opCircuit.region(0).block(0)
   def findModuleBlock(name: String): MlirBlock = opModules.find(_._1 == name).get._2.region(0).block(0)
+  def currentModuleName:  String = opModules.last._1
   def currentModuleBlock: MlirBlock = opModules.last._2.region(0).block(0)
   def currentBlock:       MlirBlock = if (whenStack.nonEmpty) whenStack.top.block else currentModuleBlock
 }
@@ -297,8 +298,15 @@ class PanamaCIRCTConverter extends CIRCTConverter {
             case enclosure: BlackBox => Reference.BlackBoxIO(enclosure)
             case enclosure =>
               val index = enclosure.getChiselPorts.indexWhere(_._2 == data)
-              assert(index != -1, s"can't find port '$data' from '$enclosure'")
-              val value = circt.mlirBlockGetArgument(firCtx.findModuleBlock(enclosure.name), index)
+              assert(index >= 0, s"can't find port '$data' from '$enclosure'")
+
+              val value = if (enclosure.name != firCtx.currentModuleName) {
+                // Reference to a port from instance
+                firCtx.getItemVec(enclosure).get(index)
+              } else {
+                // Reference to a port from current module
+                circt.mlirBlockGetArgument(firCtx.currentModuleBlock, index)
+              }
               Reference.Value(value, data)
           }
         }
@@ -309,12 +317,20 @@ class PanamaCIRCTConverter extends CIRCTConverter {
           data.binding.getOrElse(throw new Exception("non-child data")) match {
             case binding: ChildBinding =>
               binding.parent match {
-                case vec:    Vec[_] => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), tpe)
+                case vec: Vec[_] =>
+                  val index = vec.elementsIterator.indexWhere(_ == data)
+                  assert(index >= 0, s"can't find element '$data'")
+                  Reference.SubIndex(index, tpe)
                 case record: Record =>
-                  Reference.SubField(record.elements.size - record.elements.values.iterator.indexOf(data) - 1, tpe)
+                  val index = record.elements.size - record.elements.values.iterator.indexOf(data) - 1
+                  assert(index >= 0, s"can't find field '$data'")
+                  Reference.SubField(index, tpe)
               }
-            case SampleElementBinding(vec) => Reference.SubIndex(vec.elementsIterator.indexWhere(_ == data), tpe)
-            case _                         => throw new Exception("non-child data")
+            case SampleElementBinding(vec) =>
+              val index = vec.elementsIterator.indexWhere(_ == data)
+              assert(index >= 0, s"can't find element '$data'")
+              Reference.SubIndex(index, tpe)
+            case _ => throw new Exception("non-child data")
           }
         }
 

@@ -17,6 +17,14 @@ object Smoke extends TestSuite {
     })
   }
 
+  class NormalModule extends Module {
+    val io = IO(new Bundle {
+      val O = Output(Clock())
+      val II = Input(Clock())
+      val IB = Input(Clock())
+    })
+  }
+
   class PortTestModule extends Module {
     val in = IO(Input(UInt(8.W)))
     val out = IO(Output(UInt(8.W)))
@@ -199,8 +207,9 @@ object Smoke extends TestSuite {
       }
     }
     val ibufds = Module(new IBUFDS)
-    // connecting one of IBUFDS's input clock ports to Top's clock signal
     ibufds.io.I := clock
+    val nMod = Module(new NormalModule)
+    nMod.io.II := clock
   }
 
   class WhenModule extends Module {
