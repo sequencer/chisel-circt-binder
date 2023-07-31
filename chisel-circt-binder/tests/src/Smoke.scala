@@ -73,6 +73,8 @@ object Smoke extends TestSuite {
     attach(a1)
     attach(a5.s3.s22.s222)
     attach(a3.sub1.sub2(0), a2.sub)
+    attach(a3.sub1.sub2(0.U), a2.sub)
+    attach(a3.sub1.sub2(outNonFlip.out1), a2.sub)
     attach(a4.s1)
     attach(a4.s2)
 

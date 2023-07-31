@@ -68,6 +68,7 @@ object Reference {
   final case class BlackBoxIO(enclosure: BaseModule) extends Reference
   final case class SubField(index: Int, tpe: fir.Type) extends Reference
   final case class SubIndex(index: Int, tpe: fir.Type) extends Reference
+  final case class SubIndexDynamic(index: MlirValue, tpe: fir.Type) extends Reference
 }
 
 case class WhenContext(op: Op, var inAlt: Boolean) {
@@ -211,7 +212,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
         bits += 1
         num >>>= 1
       }
-      bits
+      max(bits, 1)
     }
 
     def widthShl(lhs: fir.Width, rhs: fir.Width): fir.Width = (lhs, rhs) match {
@@ -292,7 +293,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     }
 
     // Get reference chain for a node
-    def valueReferenceChain(id: HasId): Seq[Reference] = {
+    def valueReferenceChain(id: HasId, loc: MlirLocation): Seq[Reference] = {
       def rec(id: HasId, chain: Seq[Reference]): Seq[Reference] = {
         def referToPort(data: ChiselData, enclosure: BaseModule): Reference = {
           enclosure match {
@@ -319,18 +320,17 @@ class PanamaCIRCTConverter extends CIRCTConverter {
             case binding: ChildBinding =>
               binding.parent match {
                 case vec: Vec[_] =>
-                  val index = vec.elementsIterator.indexWhere(_ == data)
-                  assert(index >= 0, s"can't find element '$data'")
-                  Reference.SubIndex(index, tpe)
+                  data.getRef match {
+                    case Index(_, ILit(index)) => Reference.SubIndex(index.toInt, tpe)
+                    case Index(_, dynamicIndex) =>
+                      val index = referTo(dynamicIndex, loc)
+                      Reference.SubIndexDynamic(index.value, index.tpe)
+                  }
                 case record: Record =>
                   val index = record.elements.size - record.elements.values.iterator.indexOf(data) - 1
                   assert(index >= 0, s"can't find field '$data'")
                   Reference.SubField(index, tpe)
               }
-            case SampleElementBinding(vec) =>
-              val index = vec.elementsIterator.indexWhere(_ == data)
-              assert(index >= 0, s"can't find element '$data'")
-              Reference.SubIndex(index, tpe)
             case _ => throw new Exception("non-child data")
           }
         }
@@ -367,7 +367,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     def referTo(id: HasId, loc: MlirLocation): Reference.Value = {
       val indexType = circt.mlirIntegerTypeGet(32)
 
-      val refChain = valueReferenceChain(id)
+      val refChain = valueReferenceChain(id, loc)
 
       // Root value will be the first element in the chain
       // So the initialization value of the `foldLeft` is unnecessary
@@ -400,6 +400,20 @@ class PanamaCIRCTConverter extends CIRCTConverter {
                   .OpBuilder("firrtl.subindex", firCtx.currentBlock, loc)
                   .withNamedAttr("index", circt.mlirIntegerAttrGet(indexType, index))
                   .withOperand(parentValue)
+                  .withResult(util.convert(tpe))
+                  .build()
+                  .results(0),
+                tpe
+              )
+            case Reference.SubIndexDynamic(index, tpe) =>
+              val (parentValue, parentType) = parent match {
+                case Reference.Value(parentValue, parentType) => (parentValue, parentType)
+              }
+              Reference.Value(
+                util
+                  .OpBuilder("firrtl.subaccess", firCtx.currentBlock, loc)
+                  .withOperand( /* input */ parentValue)
+                  .withOperand( /* index */ index)
                   .withResult(util.convert(tpe))
                   .build()
                   .results(0),
