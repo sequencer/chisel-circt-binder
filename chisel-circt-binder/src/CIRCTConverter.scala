@@ -2,6 +2,7 @@
 
 package chisel3.internal
 
+import java.io.OutputStream
 import chisel3.{Data, VerificationStatement => VerifStmt}
 import chisel3.assert.Assert
 import chisel3.assume.Assume
@@ -9,7 +10,7 @@ import chisel3.cover.Cover
 import chisel3.internal.firrtl._
 
 abstract class CIRCTConverter {
-  def exportFIRRTL(): String
+  def exportFIRRTL(stream: OutputStream): Unit
 
   def visitCircuit(name:                        String):               Unit
   def visitDefBlackBox(defBlackBox:             DefBlackBox):          Unit

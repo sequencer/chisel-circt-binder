@@ -2,6 +2,10 @@
 
 package chisel3.internal.panama
 
+import java.io.OutputStream
+import scala.collection.mutable
+import scala.math._
+
 import firrtl.{ir => fir}
 import chisel3.{Data => ChiselData, _}
 import chisel3.experimental._
@@ -12,10 +16,6 @@ import chisel3.assume.{Assume => VerifAssume}
 import chisel3.cover.{Cover => VerifCover}
 import chisel3.printf.{Printf => VerifPrintf}
 import chisel3.stop.{Stop => VerifStop}
-
-import scala.collection.mutable
-import scala.math._
-
 import chisel3.internal.CIRCTConverter
 import chisel3.internal.panama.circt._
 
@@ -451,10 +451,8 @@ class PanamaCIRCTConverter extends CIRCTConverter {
     circt.mlirOperationDump(circt.mlirModuleGetOperation(mlirRootModule))
   }
 
-  def exportFIRRTL(): String = {
-    var ret = new String
-    circt.mlirExportFIRRTL(mlirRootModule, message => ret += message)
-    ret
+  def exportFIRRTL(stream: OutputStream): Unit = {
+    circt.mlirExportFIRRTL(mlirRootModule, message => stream.write(message.getBytes))
   }
 
   def visitCircuit(name: String): Unit = {
@@ -1088,8 +1086,6 @@ private[chisel3] object PanamaCIRCTConverter {
     visitCircuit(circuit)
     cvt
   }
-
-  def firrtl(implicit cvt: CIRCTConverter): String = cvt.exportFIRRTL()
 
   def visitCircuit(circuit: Circuit)(implicit cvt: CIRCTConverter): Unit = {
     cvt.visitCircuit(circuit.name)
