@@ -212,6 +212,28 @@ object Smoke extends TestSuite {
     ibufds.io.I := clock
     val nMod = Module(new NormalModule)
     nMod.io.II := clock
+
+    class MyBundle1 extends Bundle {
+      val x = Bool()
+      val y = Bool()
+    }
+
+    class MyBundle2 extends Bundle {
+      val x = Bool()
+      val y = Bool()
+    }
+
+    val bundleIO = IO(new Bundle {
+      val in = Input(new MyBundle1)
+      val out = Output(new MyBundle2)
+    })
+
+    bundleIO.out <> bundleIO.in
+
+    // VecInit a bundle
+    val v1 = VecInit(Seq.fill(2)(Wire(new Bundle { val a = new Bundle { val b = UInt(8.W) } })))
+    val v2 = VecInit(Seq.fill(2)(Wire(new Bundle { val a = UInt(8.W) })))
+    v1(1.U).a.b := 123.U
   }
 
   class WhenModule extends Module {

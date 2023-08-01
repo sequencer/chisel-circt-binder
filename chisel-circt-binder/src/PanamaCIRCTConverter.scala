@@ -324,7 +324,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
                     case Index(_, ILit(index)) => Reference.SubIndex(index.toInt, tpe)
                     case Index(_, dynamicIndex) =>
                       val index = referTo(dynamicIndex, loc)
-                      Reference.SubIndexDynamic(index.value, index.tpe)
+                      Reference.SubIndexDynamic(index.value, tpe)
                   }
                 case record: Record =>
                   val index = record.elements.size - record.elements.values.iterator.indexOf(data) - 1
@@ -468,6 +468,7 @@ class PanamaCIRCTConverter extends CIRCTConverter {
 
   val firrtlStream = new Writable {
     def writeBytesTo(out: OutputStream): Unit = {
+      dumpMlir()
       circt.mlirExportFIRRTL(mlirRootModule, message => out.write(message.getBytes))
     }
   }
@@ -1120,15 +1121,15 @@ private[chisel3] object PanamaCIRCTConverter {
       case (cmd, nextCmd) =>
         cmd match {
           // Command
-          case altBegin:       AltBegin       => visitAltBegin(altBegin)
-          case attach:         Attach         => visitAttach(attach)
-          case connect:        Connect        => visitConnect(connect)
-          case partialConnect: PartialConnect => {} // TODO
-          case connectInit:    ConnectInit    => visitConnectInit(connectInit)
-          case defInvalid:     DefInvalid     => visitDefInvalid(defInvalid)
-          case otherwiseEnd:   OtherwiseEnd   => visitOtherwiseEnd(otherwiseEnd)
-          case whenBegin:      WhenBegin      => visitWhenBegin(whenBegin)
-          case whenEnd:        WhenEnd        => visitWhenEnd(whenEnd, nextCmd)
+          case altBegin: AltBegin => visitAltBegin(altBegin)
+          case attach:   Attach   => visitAttach(attach)
+          case connect:  Connect  => visitConnect(connect)
+          // case partialConnect: PartialConnect => {} // TODO
+          case connectInit:  ConnectInit  => visitConnectInit(connectInit)
+          case defInvalid:   DefInvalid   => visitDefInvalid(defInvalid)
+          case otherwiseEnd: OtherwiseEnd => visitOtherwiseEnd(otherwiseEnd)
+          case whenBegin:    WhenBegin    => visitWhenBegin(whenBegin)
+          case whenEnd:      WhenEnd      => visitWhenEnd(whenEnd, nextCmd)
 
           // Definition
           case defInstance:  DefInstance               => visitDefInstance(defInstance)
