@@ -23,7 +23,7 @@ trait ChiselCIRCTBinderPublishModule extends PublishModule { m =>
 }
 
 trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule with ScalaModule {
-  def circtJextractModule: PublishModule
+  def circtPanamaModule: PublishModule
 
   def chisel3Module: Option[PublishModule] = None
 
@@ -37,7 +37,7 @@ trait ChiselCIRCTBinderModule extends ChiselCIRCTBinderPublishModule with ScalaM
   def chisel3PluginIvyDep: T[Option[Dep]] = None
 
   // User should not override lines below
-  override def moduleDeps = Seq(circtJextractModule) ++ chisel3Module
+  override def moduleDeps = Seq(circtPanamaModule) ++ chisel3Module
 
   override def scalacPluginClasspath = T {
     super.scalacPluginClasspath() ++ chisel3PluginJar()

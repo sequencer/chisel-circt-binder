@@ -14,53 +14,9 @@ object mychisel3 extends dependencies.chisel3.build.Chisel(v.scala) {
   override def millSourcePath = os.pwd / "dependencies" / "chisel3"
 }
 
-object circt extends Module {
-  def circtSourcePath = os.pwd / "dependencies" / "circt"
-
-  def llvmSourcePath = os.pwd / "dependencies" / "llvm-project"
-
-  def installDirectory = T {
-    T.dest
-  }
-
-  def install = T {
-    os.proc("ninja", "-j64", "install").call(cmake())
-  }
-
-  def cmake = T.persistent {
-    // @formatter:off
-    os.proc(
-      "cmake",
-      "-S", llvmSourcePath / "llvm",
-      "-B", T.dest,
-      "-G", "Ninja",
-      s"-DCMAKE_INSTALL_PREFIX=${installDirectory()}",
-      "-DCMAKE_BUILD_TYPE=Debug",
-      "-DLLVM_ENABLE_PROJECTS=mlir",
-      "-DLLVM_TARGETS_TO_BUILD=X86",
-      "-DLLVM_ENABLE_ASSERTIONS=ON",
-      "-DLLVM_BUILD_EXAMPLES=OFF",
-      "-DLLVM_INCLUDE_EXAMPLES=OFF",
-      "-DLLVM_INCLUDE_TESTS=OFF",
-      "-DLLVM_INSTALL_UTILS=OFF",
-      "-DLLVM_ENABLE_OCAMLDOC=OFF",
-      "-DLLVM_ENABLE_BINDINGS=OFF",
-      "-DLLVM_CCACHE_BUILD=OFF",
-      "-DLLVM_BUILD_TOOLS=OFF",
-      "-DLLVM_OPTIMIZED_TABLEGEN=ON",
-      "-DLLVM_USE_SPLIT_DWARF=ON",
-      "-DLLVM_BUILD_LLVM_DYLIB=OFF",
-      "-DLLVM_LINK_LLVM_DYLIB=OFF",
-      "-DLLVM_EXTERNAL_PROJECTS=circt",
-      "-DBUILD_SHARED_LIBS=ON",
-      s"-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$circtSourcePath"
-    ).call(T.dest)
-    // @formatter:on
-    T.dest
-  }
-}
-
-object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaModule {
+case class circtJextract(includePath: os.Path, jextractPath: os.Path)
+    extends common.ChiselCIRCTBinderPublishModule
+    with JavaModule {
   def javacVersion = T.input {
     val version = os
       .proc("javac", "-version")
@@ -80,30 +36,14 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
     Seq("--enable-preview", "--source", javacVersion().toString)
   }
 
-  def jextractTarGz = T.persistent {
-    val f = T.dest / "jextract.tar.gz"
-    if (!os.exists(f))
-      Util.download(
-        s"https://download.java.net/java/early_access/jextract/1/openjdk-20-jextract+1-2_linux-x64_bin.tar.gz",
-        os.rel / "jextract.tar.gz"
-      )
-    PathRef(f)
-  }
-
-  def jextract = T.persistent {
-    os.proc("tar", "xvf", jextractTarGz().path).call(T.dest)
-    PathRef(T.dest / "jextract-20" / "bin" / "jextract")
-  }
-
   // Generate all possible bindings
   def dumpAllIncludes = T {
     val f = os.temp()
     // @formatter:off
     os.proc(
-      jextract().path,
-      circt.installDirectory() / "include" / "circt-c" / "Dialect" / "FIRRTL.h",
-      "-I", circt.installDirectory() / "include",
-      "-I", circt.llvmSourcePath / "mlir" / "include",
+      jextractPath,
+      includePath / "circt-c" / "Dialect" / "FIRRTL.h",
+      "-I", includePath,
       "--dump-includes", f
     ).call()
     // @formatter:on
@@ -243,14 +183,12 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
   }
 
   override def generatedSources: T[Seq[PathRef]] = T {
-    circt.install()
     // @formatter:off
     os.proc(
       Seq(
-        jextract().path.toString,
+        jextractPath.toString,
         "chisel-circt-binder/jextract-headers.h",
-        "-I", (circt.installDirectory() / "include").toString,
-        "-I", (circt.llvmSourcePath / "mlir" / "include").toString,
+        "-I", includePath.toString,
         "-t", "org.llvm.circt",
         "-l", "MLIRCAPIIR",
         "-l", "CIRCTCAPIFIRRTL",
@@ -290,13 +228,27 @@ object `circt-jextract` extends common.ChiselCIRCTBinderPublishModule with JavaM
   }
 }
 
+trait CIRCTPanamaModule extends common.ChiselCIRCTBinderPublishModule with JavaModule {
+  def includePath:  os.Path
+  def libraryPath:  os.Path
+  def jextractPath: os.Path
+
+  val jextract = circtJextract(includePath, jextractPath)
+}
+
+object circtPanama extends CIRCTPanamaModule {
+  def includePath = os.Path("/usr/local/include")
+  def libraryPath = os.Path("/usr/local/lib")
+  def jextractPath = os.Path("/home/asuna/dev/jextract-20/bin/jextract")
+}
+
 object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with ScalaModule with ScalafmtModule {
   m =>
   def scalaVersion = T {
     v.scala
   }
 
-  def circtJextractModule = `circt-jextract`
+  def circtPanamaModule = circtPanama
 
   def chisel3Module = Some(mychisel3)
 
@@ -309,7 +261,7 @@ object `chisel-circt-binder` extends common.ChiselCIRCTBinderModule with ScalaMo
       Seq(
         "--enable-native-access=ALL-UNNAMED",
         "--enable-preview",
-        s"-Djava.library.path=${circt.installDirectory() / "lib"}"
+        s"-Djava.library.path=${circtPanama.libraryPath}"
       )
     }
 
