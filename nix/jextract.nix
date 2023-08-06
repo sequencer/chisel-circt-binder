@@ -50,6 +50,7 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     gradle
     makeWrapper
+    jdk20
   ];
 
   env = {
@@ -77,17 +78,10 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -D --mode=0444 --target-directory="$out/share/java" \
-      ./build/libs/org.openjdk.jextract-unspecified.jar
+    mkdir -p $out
+    cp -r ./build/jextract/* $out
 
     runHook postInstall
-  '';
-
-  postFixup = ''
-    makeWrapper "${jdk20}/bin/java" "$out/bin/jextract" \
-      --add-flags "--enable-preview" \
-      --add-flags "--class-path $out/share/java/org.openjdk.jextract-unspecified.jar" \
-      --add-flags "org.openjdk.jextract.JextractTool"
   '';
 
   meta = with lib; {

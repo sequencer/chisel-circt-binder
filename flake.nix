@@ -27,8 +27,9 @@
           devShells = {
             default = pkgs.mkShell {
               buildInputs = chiselDeps;
+              CIRCT_INSTALL_PATH = pkgs.circt;
             };
-	  };
+          };
         }
       )
     // { inherit inputs; overlays.default = overlay; };
