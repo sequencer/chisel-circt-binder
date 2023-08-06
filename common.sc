@@ -6,7 +6,6 @@ trait HasJextractGeneratedSources
   extends JavaModule {
   def includePath: T[PathRef]
   def libraryPath: T[PathRef]
-  def jextractBinary: T[PathRef]
 
   def header: T[PathRef]
   def includeFunctions: T[Seq[String]]
@@ -23,7 +22,7 @@ trait HasJextractGeneratedSources
     val f = os.temp()
     // @formatter:off
     os.proc(
-      jextractBinary(),
+      "jextract",
       header().path,
       "-I", includePath().path,
       "--dump-includes", f
@@ -37,8 +36,8 @@ trait HasJextractGeneratedSources
       // @formatter:off
       os.proc(
         Seq(
-          jextractBinary().path,
-          header().path,
+          "jextract",
+          header().path.toString,
           "-I", includePath.toString,
           "-t", target(),
           "--header-class-name", headerClassName(),
@@ -236,15 +235,16 @@ trait ChiselCIRCTPanamaBinderModule
 
   def target: T[String] = T("org.llvm.circt")
   def headerClassName: T[String] = T("CAPI")
-  def header = millSourcePath / "jextract-headers.h"
+  def header = T(PathRef(millSourcePath / "jextract-headers.h"))
 }
 
-trait HasChiselCIRCTPanamaBinderModule {
+trait HasChiselCIRCTPanamaBinderModule 
+  extends ScalaModule {
   def chiselCIRCTPanamaBinderModule: ChiselCIRCTPanamaBinderModule
-  override def moduleDeps = super.moduleDeps ++ chiselCIRCTPanamaBinderModule
+  override def moduleDeps = super.moduleDeps ++ Some(chiselCIRCTPanamaBinderModule)
   override def forkArgs: T[Seq[String]] = T(Seq(
     "--enable-native-access=ALL-UNNAMED",
     "--enable-preview",
-    s"-Djava.library.path=${chiselCIRCTPanamaBinderModul.libraryPath().path}"
+    s"-Djava.library.path=${chiselCIRCTPanamaBinderModule.libraryPath().path}"
   ))
 }
