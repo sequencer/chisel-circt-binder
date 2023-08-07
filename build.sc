@@ -1,4 +1,3 @@
-import java.nio.file.Path
 import mill._
 import mill.scalalib._
 import mill.scalalib.publish._
@@ -19,13 +18,8 @@ trait Chisel extends dependencies.chisel.build.Chisel {
 }
 
 object `chisel-circt-binder` extends common.ChiselCIRCTPanamaBinderModule { m =>
-  // TODO: find path from nix+env
   def circtInstallPath = T(os.Path(sys.env.get("CIRCT_INSTALL_PATH").getOrElse("/usr/local")))
-  def includePaths = T(
-    Seq(
-      PathRef(circtInstallPath() / "include")
-    )
-  )
+  def includePaths = T(Seq(PathRef(circtInstallPath() / "include")))
   def libraryPaths = T(Seq(PathRef(circtInstallPath() / "lib")))
 
   def scalaVersion = T(v.scala)
