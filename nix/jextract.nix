@@ -50,7 +50,6 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     gradle
     makeWrapper
-    jdk20
   ];
 
   env = {
@@ -78,10 +77,14 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p $out
-    cp -r ./build/jextract/* $out
+    mkdir -p $out/opt/
+    cp -r ./build/jextract $out/opt/jextract
 
     runHook postInstall
+  '';
+
+  postFixup = ''
+    makeWrapper "$out/opt/jextract/bin/jextract" "$out/bin/jextract"
   '';
 
   meta = with lib; {
@@ -91,3 +94,4 @@ stdenv.mkDerivation {
     maintainers = with maintainers; [ sharzy ];
   };
 }
+
