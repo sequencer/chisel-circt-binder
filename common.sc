@@ -235,6 +235,7 @@ trait ChiselCIRCTPanamaBinderModule extends ScalaModule with HasJextractGenerate
 trait HasChiselCIRCTPanamaBinderModule extends ScalaModule {
   def chiselCIRCTPanamaBinderModule: ChiselCIRCTPanamaBinderModule
   override def moduleDeps = super.moduleDeps ++ Some(chiselCIRCTPanamaBinderModule)
+  override def javacOptions = T(super.javacOptions() ++ Seq("--enable-preview", "--release", "20"))
   override def forkArgs: T[Seq[String]] = T(
     super.forkArgs() ++ Seq("--enable-native-access=ALL-UNNAMED", "--enable-preview")
       ++ chiselCIRCTPanamaBinderModule
