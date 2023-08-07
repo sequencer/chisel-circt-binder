@@ -5,6 +5,17 @@ final: prev:
   jextract = prev.callPackage ./nix/jextract.nix { };
   circt = prev.circt.overrideAttrs (old: {
     version = "for-binder";
+    cmakeFlags = [
+      "-DBUILD_SHARED_LIBS=ON"
+      "-DLLVM_ENABLE_BINDINGS=OFF"
+      "-DLLVM_ENABLE_OCAMLDOC=OFF"
+      "-DLLVM_BUILD_EXAMPLES=OFF"
+      "-DLLVM_OPTIMIZED_TABLEGEN=ON"
+      "-DLLVM_ENABLE_PROJECTS=mlir"
+      "-DLLVM_EXTERNAL_PROJECTS=circt"
+      "-DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=.."
+      "-DCIRCT_LLHD_SIM_ENABLED=OFF"
+    ];
     src = final.fetchFromGitHub {
       owner = "llvm";
       repo = "circt";
